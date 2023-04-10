@@ -2,6 +2,8 @@ class DataDictionary:
 
     def variable_decimal_percision(self, meta, variable_name):
         """Return the decimal percision for a variable in a dataframe"""
+
+        #return 0
         if meta.readstat_variable_types[variable_name] == 'double':
             return meta.original_variable_types[variable_name].split('.')[1].count('0')
         else:
