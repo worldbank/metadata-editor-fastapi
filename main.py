@@ -234,6 +234,8 @@ async def write_csv(fileinfo: FileInfo):
             return {"error": "file not supported" + file_ext}
         
     
+        df=df.convert_dtypes()
+
         #csv_filepath = os.path.join(settings.storage_path, os.path.splitext(os.path.basename(fileinfo.file_path))[0] + '.csv')
         csv_filepath = os.path.join(folder_path,os.path.splitext(os.path.basename(fileinfo.file_path))[0] + '.csv')    
         df.to_csv(csv_filepath, index=False)
