@@ -9,9 +9,12 @@ class DataDictionary:
         else:
             return 0
 
-    def variable_measure(self, meta,variable_name):
+    def variable_measure(self, meta,variable_name,variable_has_categories=False):
         """Return the measure for a variable in a dataframe"""
         # var measure takes values: scale, ordinal, nominal or unknown
+
+        if variable_has_categories:
+            return 'discrete'
 
         value_labels = meta.variable_value_labels   
         
@@ -38,21 +41,21 @@ class DataDictionary:
             }
         }
 
-        stats_remove=['25%','50%','75%','top']
-        for stats,value in summary_stats.items():
-            if stats not in stats_remove:
-                range_result['range'][stats]=str(value)
-
-        return range_result
+        #stats_remove=['25%','50%','75%','top']
+        #for stats,value in summary_stats.items():
+        #    if stats not in stats_remove:
+        #        range_result['range'][stats]=str(value)
+        #
+        #return range_result
 
         return {
             "range": {
                 "UNITS": "REAL",
-                "count": str(summary_stats.get('count')),
-                "min": str(summary_stats.get('min','')),
-                "max": str(summary_stats.get('max','')),
-                "mean": str(summary_stats.get('mean','')),
-                "stdev": str(summary_stats.get('std',''))
+                "count": int(summary_stats.get('count',0)),
+                "min": str(summary_stats.get('min')),
+                "max": str(summary_stats.get('max')),
+                #"mean": str(summary_stats.get('mean','')),
+                #"stdev": str(summary_stats.get('std',''))
             }
         }
 
@@ -69,19 +72,19 @@ class DataDictionary:
                 },
                 {
                     "type":"min",
-                    "value": summary_stats.get('min')
+                    "value": str(summary_stats.get('min'))
                 },
                 {
                     "type":"max",
-                    "value": summary_stats.get('max')
+                    "value": str(summary_stats.get('max'))
                 },
                 {
                     "type": "mean",
-                    "value": summary_stats.get('mean'),
+                    "value": str(summary_stats.get('mean'))
                 },
                 {
                     "type": "stdev",
-                    "value": summary_stats.get('std')
+                    "value": str(summary_stats.get('std'))
                 }
             ]
 
@@ -186,13 +189,17 @@ class DataDictionary:
     def variable_summary(self, df,meta,variable_name):
         """Return a dictionary of summary statistics for a variable in a dataframe"""
 
-        
+        variable_categories=self.variable_categories_calculated(df,meta,variable_name)
+        variable_has_categories=False
+        if (variable_categories):
+            variable_has_categories=True
+                
 
         return {
             "name": variable_name,
             "labl": meta.column_names_to_labels[variable_name],
-            "var_dcml": self.variable_decimal_percision(meta,variable_name),
-            "var_intrvl": self.variable_measure(meta,variable_name),
+            #"var_dcml": self.variable_decimal_percision(meta,variable_name),
+            "var_intrvl": self.variable_measure(meta,variable_name,variable_has_categories),
             "loc_width": meta.variable_display_width[variable_name],
             #TODO
             #"var_invalrng": {
@@ -222,7 +229,7 @@ class DataDictionary:
             #    "value": 0
             #    }
             #],
-            "var_catgry": self.variable_categories_calculated(df,meta,variable_name),
+            "var_catgry": variable_categories,
             #"var_catgry": [
             #    {
             #        "value": 0,
