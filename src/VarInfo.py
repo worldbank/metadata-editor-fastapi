@@ -1,12 +1,6 @@
 from pydantic import BaseModel
-
-class WeightsColumns(BaseModel):
-    weight_field: str
-    field: str
-
-class UserMissings(BaseModel):
-    field: str
-    missings: list
+from src.UserMissings import UserMissings
+from src.WeightsColumns import WeightsColumns
 
 
 class VarInfo(BaseModel):

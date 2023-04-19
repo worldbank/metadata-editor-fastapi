@@ -1,14 +1,6 @@
 from pydantic import BaseModel
-
-class WeightsColumns(BaseModel):
-    field: str
-    weight_field: str
-    
-
-class UserMissings(BaseModel):
-    field: str
-    missings: list
-
+from src.UserMissings import UserMissings
+from src.WeightsColumns import WeightsColumns
 
 class DictParams(BaseModel):
     file_path: str
