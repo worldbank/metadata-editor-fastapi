@@ -3,6 +3,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import pyreadstat
 import time
+from typing import List
 from src.DataUtils import DataUtils
 from src.DataDictionary import DataDictionary
 import re
@@ -41,13 +42,13 @@ class WeightsColumns(BaseModel):
 
 class UserMissings(BaseModel):
     field: str
-    missings: list
+    missings: List[str]
     
 class VarInfo(BaseModel):
     file_path: str
-    var_names: list
-    weights: list[WeightsColumns] = []
-    missings: list[UserMissings] = []
+    var_names: List[str]
+    weights: List[WeightsColumns] = []
+    missings: List[UserMissings] = []
 
 
 

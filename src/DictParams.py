@@ -5,6 +5,6 @@ from src.WeightsColumns import WeightsColumns
 
 class DictParams(BaseModel):
     file_path: str
-    var_names: list = []
+    var_names: List = []
     weights: List[WeightsColumns] = []
     missings: List[UserMissings] = []
