@@ -170,6 +170,8 @@ async def fifo_worker():
 
 
 
+
+
 @app.on_event("startup")
 async def start_queue():
     asyncio.create_task(fifo_worker())        
@@ -236,14 +238,20 @@ async def write_data_dictionary_file(jobid, params: DictParams):
     datadict=DataDictionary()
     app.jobs[jobid]["status"]="processing"
 
-    result=await loop.run_in_executor(None, datadict.get_data_dictionary_variable, params)
+    try:
+        result=await loop.run_in_executor(None, datadict.get_data_dictionary_variable, params)
 
-    app.jobs[jobid]["status"]="done"
-    file_path=os.path.join('jobs', str(jobid) + '.json')
-    with open(file_path, 'w') as outfile:
-        json.dump(result, outfile)
+        app.jobs[jobid]["status"]="done"
+        file_path=os.path.join('jobs', str(jobid) + '.json')
+        with open(file_path, 'w') as outfile:
+            json.dump(result, outfile)
         
-    return {"status": "success", "file_path": file_path}
+        return {"status": "success", "file_path": file_path}
+    
+    except Exception as e:
+        app.jobs[jobid]["status"]="error"
+        app.jobs[jobid]["error"]=str(e)
+        return {"status": "error", "error": str(e)}
 
 
 
@@ -270,8 +278,11 @@ async def queue_items(jobid: str):
             else:
                 raise HTTPException(status_code=400, detail="Failed to load job data") 
 
-            job['data']=data
-            return job 
+            job_response=job.copy()
+            job_response['data']=data            
+            return job_response
+        elif (job["status"]=="error"):
+            raise HTTPException(status_code=400, detail=job['error'])
         else:
             return job
 

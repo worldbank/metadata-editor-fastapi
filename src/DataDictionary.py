@@ -10,15 +10,13 @@ from src.DictParams import DictParams
 from src.DataUtils import DataUtils
 
 
+
 class DataDictionary:
 
     def load_file(self, fileinfo:FileInfo, metadataonly=True, usecols=None):
         file_ext=os.path.splitext(fileinfo.file_path)[1]
-        folder_path=os.path.dirname(fileinfo.file_path)
-        file_exists=os.path.exists(fileinfo.file_path)
-
-        if not file_exists:
-            return {"error": "file not found: " + fileinfo.file_path}
+        #folder_path=os.path.dirname(fileinfo.file_path)
+        #file_exists=os.path.exists(fileinfo.file_path)
 
         if file_ext.lower() == '.dta':
             df,meta = pyreadstat.read_dta(fileinfo.file_path, metadataonly=metadataonly, usecols=usecols)
@@ -30,12 +28,15 @@ class DataDictionary:
             return {"error": "file not supported" + file_ext}
         
         return df,meta
+            
+        
+        
+
 
     # get basic metadata excluding summary statistics
     def get_metadata(self, fileinfo: FileInfo):
 
         df,meta = self.load_file(fileinfo)
-
         variables=[]
 
         for name in meta.column_names:
@@ -62,7 +63,6 @@ class DataDictionary:
         }
 
         return basic_sumstat
-
 
 
 
@@ -95,7 +95,7 @@ class DataDictionary:
                 columns.append(str(w.field))
                 columns.append(str(w.weight_field))
 
-        print ("columns: ",columns)
+        #print ("columns: ",columns)
         df,meta = self.load_file(params,metadataonly=False,usecols=columns)
 
         df.fillna(pd.NA,inplace=True)
@@ -140,13 +140,6 @@ class DataDictionary:
                     var_catgry['stats'].append(
                         DataUtils.set_wgt_stats_by_value(weights_obj,field=variable['name'],value=int(var_catgry['value']))
                     )
-
-
-
-
-
-
-
 
 
 
