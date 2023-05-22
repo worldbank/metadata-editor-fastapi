@@ -11,7 +11,7 @@ class DataUtils:
     #
     def set_wgt_stats_by_value( weightsDict,field,value):
         
-        print ("weightDict", weightsDict, field, value)
+        #print ("weightDict", weightsDict, field, value)
 
         if (field not in weightsDict):
             print ("field not found", field)

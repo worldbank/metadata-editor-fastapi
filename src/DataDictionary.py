@@ -8,6 +8,8 @@ from src.FileInfo import FileInfo
 from src.VarInfo import VarInfo
 from src.DictParams import DictParams
 from src.DataUtils import DataUtils
+from statsmodels.stats.weightstats import DescrStatsW
+
 
 
 
@@ -155,11 +157,20 @@ class DataDictionary:
         return output
 
     
-    #def calc_weighted_mean(self, df,col_name, wgt_col_name):
-        #return (df[col_name]*df[wgt_col_name]).sum()/df[wgt_col_name].sum()
-    def calc_weighted_mean(self, df,col_name, wgt_col_name,user_missings=list()):
-        wgt = df[col_name].replace(user_missings, np.NaN)
-        return (wgt*df[wgt_col_name]).sum()/df[wgt_col_name].sum()
+    def calc_weighted_mean(self, df,col_name, wgt_col_name):
+        col=df[col_name]
+        col.fillna(0,inplace=True)
+        wgt=df[wgt_col_name]
+        wgt.fillna(0,inplace=True)
+        wdf = DescrStatsW(col,weights=wgt,ddof=1) 
+        print("weighed mean calculated",wdf.mean)
+        return wdf.mean
+        
+        
+    
+    #def calc_weighted_mean(self, df,col_name, wgt_col_name,user_missings=list()):
+    #    wgt = df[col_name].replace(user_missings, np.NaN)    
+    #    return (wgt*df[wgt_col_name]).sum()/df[wgt_col_name].sum()
         
 
 
