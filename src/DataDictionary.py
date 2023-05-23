@@ -157,13 +157,17 @@ class DataDictionary:
         return output
 
     
-    def calc_weighted_mean(self, df,col_name, wgt_col_name):
-        col=df[col_name]
-        col.fillna(0,inplace=True)
-        wgt=df[wgt_col_name]
-        wgt.fillna(0,inplace=True)
-        wdf = DescrStatsW(col,weights=wgt,ddof=1) 
-        print("weighed mean calculated",wdf.mean)
+    def calc_weighted_mean(self, df,col_name, wgt_col_name,user_missings=list()):
+        #create a copy of df
+        new = df[[col_name,wgt_col_name]].copy()
+
+        #replace user missings with NaN
+        new[col_name]=df[col_name].replace(user_missings, np.NaN)
+
+        #drop na values
+        new.dropna(subset=[col_name], inplace=True)
+
+        wdf=DescrStatsW(new[col_name],new[wgt_col_name], ddof=1)
         return wdf.mean
         
         
