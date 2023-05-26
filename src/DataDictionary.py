@@ -24,8 +24,6 @@ class DataDictionary:
             df,meta = pyreadstat.read_dta(fileinfo.file_path, metadataonly=metadataonly, usecols=usecols)
         elif file_ext.lower() == '.sav':
             df, meta = pyreadstat.read_sav(fileinfo.file_path)       
-        elif file_ext == '.csv':
-            df, meta = pyreadstat.read_csv(fileinfo.file_path, metadataonly=metadataonly, usecols=usecols)
         else:
             return {"error": "file not supported" + file_ext}
         
@@ -37,7 +35,6 @@ class DataDictionary:
 
     # get basic metadata excluding summary statistics
     def get_metadata(self, fileinfo: FileInfo):
-
         df,meta = self.load_file(fileinfo)
         variables=[]
 
@@ -53,19 +50,39 @@ class DataDictionary:
             )
 
         basic_sumstat = {
-            #'path':os.path.abspath(os.getcwd()),
-            #'abspath':os.path.dirname(os.path.abspath(__file__)),
-            #'filename':os.path.basename(fileinfo.file_path),
-            #'file_ext':os.path.splitext(fileinfo.file_path)[1],
-            #'file_path':os.path.dirname(fileinfo.file_path),
-            #'file_exists':os.path.exists(fileinfo.file_path),
             'rows':meta.number_rows,
             'columns':meta.number_columns,
             'variables':variables,        
         }
 
         return basic_sumstat
+    
 
+
+
+
+    # get name, label, format
+    def get_name_labels(self, fileinfo: FileInfo):
+        df,meta = self.load_file(fileinfo)
+        variables=[]
+
+        for name in meta.column_names:
+            variables.append(
+                {
+                    'name':name,
+                    'labl':meta.column_names_to_labels[name],
+                    'var_format': meta.readstat_variable_types[name]
+                }
+            )
+
+        basic_sumstat = {
+            'rows':meta.number_rows,
+            'columns':meta.number_columns,
+            'variables':variables,        
+        }
+
+        return basic_sumstat
+    
 
 
     def get_data_dictionary(self, fileinfo: FileInfo):
@@ -153,7 +170,6 @@ class DataDictionary:
         for val in result:
             output[int(val)]=int(result[val])
 
-        print ("output format",output)
         return output
 
     
@@ -213,7 +229,7 @@ class DataDictionary:
         
         if (len(user_missings) > 0):
             df[variable_name].replace(user_missings, np.NaN, inplace=True)            
-                
+
         summary_stats=df[variable_name].describe(percentiles=None)
 
         #summary_stats=df[variable_name].describe(percentiles=None)
@@ -232,6 +248,8 @@ class DataDictionary:
     def variable_sumstats(self, df,meta,variable_name, user_missings=list()):
 
         if (len(user_missings) > 0):
+            #convert missing values to numeric
+            user_missings=[int(x) for x in user_missings]            
             df[variable_name].replace(user_missings, np.NaN, inplace=True)
 
         summary_stats=df[variable_name].describe(percentiles=None)
@@ -376,8 +394,7 @@ class DataDictionary:
 
 
     def variable_summary(self, df,meta,variable_name, user_missings=list()):
-        """Return a dictionary of summary statistics for a variable in a dataframe"""
-
+        """Return a dictionary of summary statistics for a variable in a dataframe"""        
         variable_categories=self.variable_categories_calculated(df,meta,variable_name, user_missings=user_missings)
         variable_has_categories=False
 
