@@ -8,3 +8,6 @@ class DictParams(BaseModel):
     var_names: List = []
     weights: List[WeightsColumns] = []
     missings: List[UserMissings] = []
+    dtypes: dict = {}
+    value_labels: dict = {}
+    export_format: str = "csv"

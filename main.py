@@ -6,6 +6,8 @@ import time
 from typing import List
 from src.DataUtils import DataUtils
 from src.DataDictionary import DataDictionary
+from src.DataDictionaryCsv import DataDictionaryCsv
+from src.ExportDatafile import ExportDatafile
 import re
 import pandas as pd
 import numpy as np
@@ -76,6 +78,13 @@ async def metadata(fileinfo: FileInfo):
     datadict=DataDictionary()
     return datadict.get_metadata(fileinfo)
 
+@app.post("/name-labels")
+async def name_labels(fileinfo: FileInfo):
+
+    datadict=DataDictionary()
+    return datadict.get_name_labels(fileinfo)
+
+
 
 @app.post("/data-dictionary")
 async def data_dictionary(fileinfo: FileInfo):
@@ -88,7 +97,13 @@ async def data_dictionary(fileinfo: FileInfo):
 @app.post("/data-dictionary-variable")
 async def data_dictionary_variable(params: DictParams):
 
-    datadict=DataDictionary()
+    file_ext=os.path.splitext(params.file_path)[1]
+
+    if file_ext.lower() == '.csv':
+        datadict=DataDictionaryCsv()
+    else:
+        datadict=DataDictionary()
+
     return datadict.get_data_dictionary_variable(params)
 
 
@@ -235,7 +250,13 @@ async def write_csv_file_callback(jobid, fileinfo: FileInfo):
 
 async def write_data_dictionary_file(jobid, params: DictParams):
     loop = asyncio.get_running_loop()
-    datadict=DataDictionary()
+    file_ext=os.path.splitext(params.file_path)[1]
+
+    if file_ext.lower() == '.csv':
+        datadict=DataDictionaryCsv()
+    else:
+        datadict=DataDictionary()
+
     app.jobs[jobid]["status"]="processing"
 
     try:
@@ -253,6 +274,48 @@ async def write_data_dictionary_file(jobid, params: DictParams):
         app.jobs[jobid]["error"]=str(e)
         return {"status": "error", "error": str(e)}
 
+
+@app.post("/export-data-queue")
+async def export_data_queue(params: DictParams):
+    print ("export_data_queue", params)
+    jobid='job-' + str(time.time())
+    app.jobs[jobid]={
+            "jobid":jobid,
+            "jobtype":"data-export",
+            "status":"queued",
+            "info":params
+        }
+    
+    data_export_callback = functools.partial(export_data_file, jobid, params)
+    await app.fifo_queue.put( data_export_callback )
+
+    return JSONResponse(status_code=202, content={
+        "message": "Item is queued",
+        "job_id": jobid
+        })
+
+
+async def export_data_file(jobid, params: DictParams):
+    loop = asyncio.get_running_loop()
+    file_ext=os.path.splitext(params.file_path)[1]
+
+    exportDF=ExportDatafile()    
+    app.jobs[jobid]["status"]="processing"
+
+    try:
+        result=await loop.run_in_executor(None, exportDF.export_file, params)
+
+        app.jobs[jobid]["status"]="done"
+        file_path=os.path.join('jobs', str(jobid) + '.json')
+        with open(file_path, 'w') as outfile:
+            json.dump(result, outfile)
+        
+        return {"status": "success", "file_path": file_path}
+    
+    except Exception as e:
+        app.jobs[jobid]["status"]="error"
+        app.jobs[jobid]["error"]=str(e)
+        return {"status": "error", "error": str(e)}
 
 
 @app.get("/jobs")

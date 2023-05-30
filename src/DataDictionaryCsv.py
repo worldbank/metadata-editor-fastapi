@@ -1,6 +1,8 @@
 import json
 import numpy as np
 import pandas as pd
+from pandas.api.types import is_string_dtype
+from pandas.api.types import is_numeric_dtype
 from pydantic import BaseModel
 import os
 import pyreadstat
@@ -9,101 +11,60 @@ from src.VarInfo import VarInfo
 from src.DictParams import DictParams
 from src.DataUtils import DataUtils
 from statsmodels.stats.weightstats import DescrStatsW
+from types import SimpleNamespace
 
 
 
 
-class DataDictionary:
 
-    def load_file(self, fileinfo:FileInfo, metadataonly=True, usecols=None):
+class DataDictionaryCsv:
+
+    def load_file(self, fileinfo:FileInfo, metadataonly=True, usecols=None, dtypes=None):
         file_ext=os.path.splitext(fileinfo.file_path)[1]
-        #folder_path=os.path.dirname(fileinfo.file_path)
-        #file_exists=os.path.exists(fileinfo.file_path)
 
-        if file_ext.lower() == '.dta':
-            df,meta = pyreadstat.read_dta(fileinfo.file_path, metadataonly=metadataonly, usecols=usecols)
-        elif file_ext.lower() == '.sav':
-            df, meta = pyreadstat.read_sav(fileinfo.file_path)       
+        if file_ext.lower() == '.csv':
+            df = pd.read_csv(fileinfo.file_path, usecols=usecols, dtype=dtypes)
+            #df,meta = pyreadstat.read_dta(fileinfo.file_path, metadataonly=metadataonly, usecols=usecols)
+
+            meta = SimpleNamespace()
+            meta.column_names=df.columns.tolist()
+            meta.column_names_to_labels=dict()
+            meta.number_rows=df.shape[0]
+            meta.number_columns=df.shape[1]
+            meta.variable_value_labels=dict()
+            meta.dtypes=df.dtypes.to_dict()
         else:
             return {"error": "file not supported" + file_ext}
         
-        return df,meta
+        return df, meta
             
-        
-        
-
-
-    # get basic metadata excluding summary statistics
-    def get_metadata(self, fileinfo: FileInfo):
-        df,meta = self.load_file(fileinfo)
-        variables=[]
-
-        for name in meta.column_names:
-            variables.append(
-                {
-                    'name':name,
-                    'labl':meta.column_names_to_labels[name],
-                    'var_intrvl': self.variable_measure(meta,name),
-                    'var_format': self.variable_format(meta,name),
-                    'var_catgry_labels': self.variable_categories(meta,name)
-                }
-            )
-
-        basic_sumstat = {
-            'rows':meta.number_rows,
-            'columns':meta.number_columns,
-            'variables':variables,        
-        }
-
-        return basic_sumstat
     
+    # def get_data_dictionary(self, fileinfo: FileInfo):
 
-
-
-
-    # get name, label, format
-    def get_name_labels(self, fileinfo: FileInfo):
-        df,meta = self.load_file(fileinfo)
-        variables=[]
-
-        for name in meta.column_names:
-            variables.append(
-                {
-                    'name':name,
-                    'labl':meta.column_names_to_labels[name],
-                    'var_format': meta.readstat_variable_types[name]
-                }
-            )
-
-        basic_sumstat = {
-            'rows':meta.number_rows,
-            'columns':meta.number_columns,
-            'variables':variables,        
-        }
-
-        return basic_sumstat
-    
-
-
-    def get_data_dictionary(self, fileinfo: FileInfo):
-
-        df,meta = self.load_file(fileinfo,metadataonly=False)
+    #     df,meta = self.load_file(fileinfo,metadataonly=False)
         
-        df.fillna(pd.NA,inplace=True)
-        df=df.convert_dtypes()
+    #     df.fillna(pd.NA,inplace=True)
+    #     df=df.convert_dtypes()
 
-        variables = []
-        for name in meta.column_names:
-            variables.append(self.variable_summary(df,meta,name))
+    #     variables = []
+    #     for name in meta.column_names:
+    #         variables.append(self.variable_summary(df,meta,name))
             
-        return {
-            'rows':meta.number_rows,
-            'columns':meta.number_columns,
-            'variables':variables
-        }
+    #     return {
+    #         'rows':meta.number_rows,
+    #         'columns':meta.number_columns,
+    #         'variables':variables
+    #     }
 
 
     def get_data_dictionary_variable(self, params: DictParams):
+
+        print("params========================================", params)
+
+        if (len(params.dtypes) == 0):
+            dtypes=None
+        else:
+            dtypes=params.dtypes
 
         if (len(params.var_names) == 0):
             columns=None
@@ -114,12 +75,11 @@ class DataDictionary:
                 columns.append(str(w.field))
                 columns.append(str(w.weight_field))
 
-        #print ("columns: ",columns)
-        df,meta = self.load_file(params,metadataonly=False,usecols=columns)
+        df,meta = self.load_file(params,metadataonly=False,usecols=columns, dtypes=dtypes)
 
         df.fillna(pd.NA,inplace=True)
         #df.fillna(0,inplace=True)
-        df=df.convert_dtypes()
+        #df=df.convert_dtypes()
 
         variables = []
         for name in meta.column_names:
@@ -192,18 +152,9 @@ class DataDictionary:
     #    wgt = df[col_name].replace(user_missings, np.NaN)    
     #    return (wgt*df[wgt_col_name]).sum()/df[wgt_col_name].sum()
         
+    
 
-
-    def variable_decimal_percision(self, meta, variable_name):
-        """Return the decimal percision for a variable in a dataframe"""
-
-        return 0
-        if meta.readstat_variable_types[variable_name] == 'double':
-            return meta.original_variable_types[variable_name].split('.')[1].count('0')
-        else:
-            return 0
-
-    def variable_measure(self, meta,variable_name,variable_has_categories=False):
+    def variable_measure(self, df, meta,variable_name,variable_has_categories=False):
         """Return the measure for a variable in a dataframe"""
         # var measure takes values: scale, ordinal, nominal or unknown
 
@@ -222,14 +173,20 @@ class DataDictionary:
             'unknown': 'contin'
         }
 
-        return measure_mappings[meta.variable_measure[variable_name]]
+        if is_numeric_dtype(df[variable_name]):
+            return 'contin'
+        elif is_string_dtype(df[variable_name]):
+            return 'discrete'
+        else:
+            return measure_mappings['unknown']
+
 
     def variable_valid_range(self, df,meta,variable_name,user_missings=list()):
         """Return a dictionary of summary statistics for a variable in a dataframe"""        
         
         if (len(user_missings) > 0):
             df[variable_name].replace(user_missings, np.NaN, inplace=True)            
-
+                
         summary_stats=df[variable_name].describe(percentiles=None)
 
         #summary_stats=df[variable_name].describe(percentiles=None)
@@ -244,7 +201,6 @@ class DataDictionary:
                 #"stdev": str(summary_stats.get('std',''))
             }
         }
-    
 
     def list_get_numeric_values(self, values):
         output=[]
@@ -255,14 +211,14 @@ class DataDictionary:
                 pass
         
         return output
-    
+        
+
 
 
     def variable_sumstats(self, df,meta,variable_name, user_missings=list()):
 
         if (len(user_missings) > 0):
-            #convert missing values to numeric
-            user_missings=self.list_get_numeric_values(user_missings)  
+            user_missings=self.list_get_numeric_values(user_missings)
             df[variable_name].replace(user_missings, np.NaN, inplace=True)
 
         summary_stats=df[variable_name].describe(percentiles=None)
@@ -282,7 +238,7 @@ class DataDictionary:
                 },
                 {
                     "type":"min",
-                    "value": str(summary_stats.get('min'))
+                    "value": str(summary_stats.get('min')) 
                 },
                 {
                     "type":"max",
@@ -298,26 +254,32 @@ class DataDictionary:
                 }
             ]
 
-    def variable_format(self, meta,variable_name):
+    def variable_format(self, df,meta,variable_name):
+        """
+        Return variable format as numeric or character
+        """
 
-        variable_type=meta.readstat_variable_types[variable_name]
-
-        if variable_type == 'double' or variable_type == 'float' or variable_type[:3] == 'int':
+        if is_numeric_dtype(df[variable_name]):
             return {
                 "type": "numeric",
+                "dtype": str(np.array(df[variable_name].dtype)),
                 "schema": "other"
-            }
-        elif variable_type == 'object' or variable_type == 'string':
+                }
+        elif is_string_dtype(df[variable_name]):
             return {
                 "type": "character",
+                "dtype": str(np.array(df[variable_name].dtype)),
                 "schema": "other"
-            }
+                }
         else:
             return {
                 "type": "unknown",
-                "original_type": variable_type,
+                "original_type": meta.dtypes[variable_name],
+                "dtype": str(np.array(df[variable_name].dtype)),
                 "schema": "other"
-            }
+                }
+
+        
 
 
 
@@ -338,14 +300,14 @@ class DataDictionary:
 
 
     def variable_categories_calculated(self, df,meta,variable_name, max_freq=100, user_missings=list()):
-        
+        print("user missings", user_missings)
         is_categorical=False
         categories=[]
         categories_calc=[]
         numeric_columns=df.select_dtypes('int').columns
 
         if (variable_name not in numeric_columns):
-            print ("variable not numeric", variable_name)
+            print ("variable not numeric, not categorical ", variable_name)
             return []
 
         #get value counts [freq] by each unique value
@@ -407,20 +369,23 @@ class DataDictionary:
 
 
     def variable_summary(self, df,meta,variable_name, user_missings=list()):
-        """Return a dictionary of summary statistics for a variable in a dataframe"""        
+        """Return a dictionary of summary statistics for a variable in a dataframe"""
+
         variable_categories=self.variable_categories_calculated(df,meta,variable_name, user_missings=user_missings)
         variable_has_categories=False
 
         if (variable_categories):
             variable_has_categories=True
-                
+
+        print ("variable_categories",variable_name, variable_categories)        
 
         return {
             "name": variable_name,
-            "labl": meta.column_names_to_labels[variable_name],
+            "labl": meta.column_names_to_labels.get(variable_name),
+            "dtype":str(np.array(df[variable_name].dtype)),
             #"var_dcml": self.variable_decimal_percision(meta,variable_name),
-            "var_intrvl": self.variable_measure(meta,variable_name,variable_has_categories),
-            "loc_width": meta.variable_display_width[variable_name],
+            "var_intrvl": self.variable_measure(df, meta,variable_name,variable_has_categories),
+            #"loc_width": meta.variable_display_width[variable_name],
             #TODO
             #"var_invalrng": {
             #    "values": [
@@ -463,7 +428,7 @@ class DataDictionary:
             #        ]
             #    }
             #],
-            "var_format": self.variable_format(meta,variable_name),
+            "var_format": self.variable_format(df,meta,variable_name),
                 # {
                 #   "type": "numeric",
                 #   "schema": "other"
