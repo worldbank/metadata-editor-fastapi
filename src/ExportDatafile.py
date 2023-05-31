@@ -69,7 +69,7 @@ class ExportDatafile:
         else:
             variable_value_labels=params.value_labels
 
-        variable_value_labels=None
+        #variable_value_labels=None
 
         if (len(params.var_names) == 0):
             columns=None
@@ -91,8 +91,9 @@ class ExportDatafile:
             "dta": "dta",
             "sav": "sav",
             'spss': "sav",
-            "sas": "sas",
-            "json": "json"            
+            "sas": "xpt",
+            "xpt": "xpt",
+            "json": "json"
         }
 
         if params.export_format not in file_formats:
@@ -116,8 +117,8 @@ class ExportDatafile:
             pyreadstat.write_sav(df, output_file_path, missing_ranges=missing_ranges, variable_value_labels=variable_value_labels)
         elif params.export_format == 'json':
             df.to_json(output_file_path, orient='records')
-        elif params.export_format == 'sas':
-            df.to_sas(output_file_path, format='sas7bdat')
+        elif params.export_format in ['sas','xpt']:
+            pyreadstat.write_xport(df,output_file_path)
         else:
             raise Exception("file format not supported: " + params.export_format)
 
