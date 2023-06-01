@@ -10,4 +10,5 @@ class DictParams(BaseModel):
     missings: List[UserMissings] = []
     dtypes: dict = {}
     value_labels: dict = {}
+    name_labels: dict = {}
     export_format: str = "csv"

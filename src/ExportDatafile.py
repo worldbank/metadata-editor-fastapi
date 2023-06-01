@@ -109,12 +109,16 @@ class ExportDatafile:
 
         print("output_file_path", output_file_path)
 
+        variable_value_labels=self.parse_value_labels(variable_value_labels)
+
+        print("variable_value_labels", variable_value_labels)
+
         if params.export_format == 'csv':
             df.to_csv(output_file_path, index=False)
         elif params.export_format in ['dta','stata']:
-            pyreadstat.write_dta(df, output_file_path, missing_user_values=missing_ranges, variable_value_labels=variable_value_labels)
+            pyreadstat.write_dta(df, output_file_path, missing_user_values=missing_ranges, variable_value_labels=variable_value_labels, column_labels=params.name_labels)
         elif params.export_format in ['spss','sav']:
-            pyreadstat.write_sav(df, output_file_path, missing_ranges=missing_ranges, variable_value_labels=variable_value_labels)
+            pyreadstat.write_sav(df, output_file_path, missing_ranges=missing_ranges, variable_value_labels=variable_value_labels, column_labels=params.name_labels)
         elif params.export_format == 'json':
             df.to_json(output_file_path, orient='records')
         elif params.export_format in ['sas','xpt']:
@@ -131,7 +135,16 @@ class ExportDatafile:
         }
 
 
-    
+    def parse_value_labels(self, value_labels):
+        """convert values to numeric values"""
+        output=dict()
+        for key, value in value_labels.items():
+            output[key]=dict()
+            for k,v in value.items():                
+                output[key][int(k)]=v
+            #output[key]=value
+
+        return output
 
     def list_get_numeric_values(self, values):
         output=[]
