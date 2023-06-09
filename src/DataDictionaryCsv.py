@@ -58,9 +58,6 @@ class DataDictionaryCsv:
 
 
     def get_data_dictionary_variable(self, params: DictParams):
-
-        print("params========================================", params)
-
         if (len(params.dtypes) == 0):
             dtypes=None
         else:
@@ -84,9 +81,9 @@ class DataDictionaryCsv:
         variables = []
         for name in meta.column_names:
             user_missings=[]
-            for user_missing in params.missings:
-                if user_missing.field == name:
-                    user_missings=user_missing.missings
+            for missing_col, missings in params.missings.items():                
+                if missing_col == name:
+                    user_missings=missings
                     break
             variables.append(self.variable_summary(df,meta,name,user_missings=user_missings))
 

@@ -7,7 +7,7 @@ class DictParams(BaseModel):
     file_path: str
     var_names: List = []
     weights: List[WeightsColumns] = []
-    missings: List[UserMissings] = []
+    missings: dict={} #List[UserMissings] = []
     dtypes: dict = {}
     value_labels: dict = {}
     name_labels: dict = {}

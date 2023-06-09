@@ -48,7 +48,7 @@ class ExportDatafile:
 
     def export_file(self, params: DictParams):
 
-        print ("export_file format", params.export_format)
+        #print ("export_file format", params.export_format)
 
         if (len(params.dtypes) == 0):
             dtypes=None
@@ -99,8 +99,6 @@ class ExportDatafile:
         if params.export_format not in file_formats:
             raise Exception("file format not supported: " + params.export_format)
         
-
-
         output_folder_path = os.path.join(os.path.dirname(params.file_path),"tmp")
         output_file_path = os.path.join(output_folder_path,os.path.splitext(os.path.basename(params.file_path))[0] + '.' + file_formats[params.export_format])
 
@@ -110,8 +108,6 @@ class ExportDatafile:
         print("output_file_path", output_file_path)
 
         variable_value_labels=self.parse_value_labels(variable_value_labels)
-
-        print("variable_value_labels", variable_value_labels)
 
         if params.export_format == 'csv':
             df.to_csv(output_file_path, index=False)
@@ -140,9 +136,8 @@ class ExportDatafile:
         output=dict()
         for key, value in value_labels.items():
             output[key]=dict()
-            for k,v in value.items():                
+            for k,v in value.items():
                 output[key][int(k)]=v
-            #output[key]=value
 
         return output
 
