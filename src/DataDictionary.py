@@ -21,9 +21,9 @@ class DataDictionary:
         #file_exists=os.path.exists(fileinfo.file_path)
 
         if file_ext.lower() == '.dta':
-            df,meta = pyreadstat.read_dta(fileinfo.file_path, metadataonly=metadataonly, usecols=usecols)
+            df,meta = pyreadstat.read_dta(fileinfo.file_path, metadataonly=metadataonly, usecols=usecols, user_missing=True)
         elif file_ext.lower() == '.sav':
-            df, meta = pyreadstat.read_sav(fileinfo.file_path)       
+            df, meta = pyreadstat.read_sav(fileinfo.file_path, user_missing=True)
         else:
             return {"error": "file not supported" + file_ext}
         
@@ -84,11 +84,25 @@ class DataDictionary:
         return basic_sumstat
     
 
+    def infer_column_types(self, df):
+        """Infer column types for a dataframe"""
+        obj_columns= df.select_dtypes('object').columns
+
+        for col in obj_columns:
+            df[col]=df[col].astype('category')
+
+            try:
+                df[col] = df[col].astype('Float64')
+                df[col] = df[col].astype('Int64')
+            except ValueError as e:
+                print("failed to convert column to numeric" + str(e) )
+
+        
 
     def get_data_dictionary(self, fileinfo: FileInfo):
 
         df,meta = self.load_file(fileinfo,metadataonly=False)
-        
+       
         df.fillna(pd.NA,inplace=True)
         df=df.convert_dtypes()
 

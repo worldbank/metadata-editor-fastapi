@@ -76,7 +76,7 @@ class DataDictionaryCsv:
 
         df.fillna(pd.NA,inplace=True)
         #df.fillna(0,inplace=True)
-        #df=df.convert_dtypes()
+        df=df.convert_dtypes()
 
         variables = []
         for name in meta.column_names:
