@@ -61,3 +61,11 @@ class DataUtils:
             "value": weighted_mean
         })
 
+    def set_variable_wgt_stddev(variable,value):
+        
+        variable['var_sumstat'].append({
+            "type": "stdev",
+            "wgtd": "wgtd",
+            "value": value
+        })
+

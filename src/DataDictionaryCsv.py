@@ -91,9 +91,11 @@ class DataDictionaryCsv:
 
         if len(params.weights) > 0:
             for weight in params.weights:            
+                weighted_=self.calc_weighted_mean_n_stddev(df,weight.field, weight.weight_field)
                 weights[weight.field]={
                         'wgt_freq': self.calc_weighted_freq(df,weight.field, weight.weight_field),
-                        'wgt_mean': self.calc_weighted_mean(df,weight.field, weight.weight_field)
+                        'wgt_mean': weighted_['mean'],
+                        'wgt_stdev': weighted_['stdev']
                     }
                     
         #add weights stats to variables
@@ -112,6 +114,7 @@ class DataDictionaryCsv:
         for variable in variables:
             if (variable['name'] in weights_obj):
                 DataUtils.set_variable_wgt_mean(variable,weighted_mean=weights_obj[variable['name']]['wgt_mean'])
+                DataUtils.set_variable_wgt_stddev(variable,value=weights_obj[variable['name']]['wgt_stdev'])
                 for var_catgry in variable['var_catgry']:            
                     var_catgry['stats'].append(
                         DataUtils.set_wgt_stats_by_value(weights_obj,field=variable['name'],value=int(var_catgry['value']))
@@ -142,6 +145,22 @@ class DataDictionaryCsv:
 
         wdf=DescrStatsW(new[col_name],new[wgt_col_name], ddof=1)
         return wdf.mean
+    
+    def calc_weighted_mean_n_stddev(self, df,col_name, wgt_col_name,user_missings=list()):
+        #create a copy of df
+        new = df[[col_name,wgt_col_name]].copy()
+
+        #replace user missings with NaN
+        new[col_name]=df[col_name].replace(user_missings, np.NaN)
+
+        #drop na values
+        new.dropna(subset=[col_name], inplace=True)
+
+        wdf=DescrStatsW(new[col_name],new[wgt_col_name], ddof=1)
+        return {
+            'mean': wdf.mean,
+            'stdev': wdf.std
+        }
         
         
     
@@ -212,10 +231,10 @@ class DataDictionaryCsv:
 
 
 
-    def variable_sumstats(self, df,meta,variable_name, user_missings=list()):
-
+    def variable_sumstats(self, df,meta,variable_name, user_missings=list()): 
         if (len(user_missings) > 0):
             user_missings=self.list_get_numeric_values(user_missings)
+
             df[variable_name].replace(user_missings, np.NaN, inplace=True)
 
         summary_stats=df[variable_name].describe(percentiles=None)
@@ -360,7 +379,6 @@ class DataDictionaryCsv:
         #if (categories):
         #    for catgry in output:
         #        catgry['labl']=categories.get(int(catgry['value']),'')
-
 
         return output
 
