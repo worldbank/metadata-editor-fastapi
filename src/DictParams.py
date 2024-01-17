@@ -4,6 +4,8 @@ from src.UserMissings import UserMissings
 from src.WeightsColumns import WeightsColumns
 
 class DictParams(BaseModel):
+    """Parameters for generating data dictionary"""
+
     file_path: str
     var_names: List = []
     weights: List[WeightsColumns] = []

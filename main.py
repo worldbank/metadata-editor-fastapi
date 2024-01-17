@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import pyreadstat
@@ -30,7 +30,6 @@ import glob
 class Settings(BaseSettings):
     storage_path: str = "data"    
     
-
 
 settings = Settings()
 
@@ -64,8 +63,8 @@ app.jobs = {}
 
 
 @app.get("/")
-async def root():
-    return {"message": "Hello World"}
+async def root(request: Request):
+    return {"message": "PyDataTool API - See documentation at " + str(request.url) + "docs"}
 
 @app.get("/status")
 async def status():
@@ -193,7 +192,7 @@ async def start_queue():
 
 
 @app.post("/data-dictionary-queue")
-async def data_dictionary_queue(params: DictParams):
+async def data_dictionary_queue(params: DictParams):    
     jobid='job-' + str(time.time())
     app.jobs[jobid]={
             "jobid":jobid,

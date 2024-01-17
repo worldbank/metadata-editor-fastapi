@@ -9,32 +9,32 @@ from src.VarInfo import VarInfo
 from src.DictParams import DictParams
 from src.DataUtils import DataUtils
 from statsmodels.stats.weightstats import DescrStatsW
+from fastapi.exceptions import HTTPException
+
 
 
 
 
 class DataDictionary:
+    """ Generate data dictionary from a data file [Stata, SPSS] """
 
     def load_file(self, fileinfo:FileInfo, metadataonly=True, usecols=None):
         file_ext=os.path.splitext(fileinfo.file_path)[1]
-        #folder_path=os.path.dirname(fileinfo.file_path)
-        #file_exists=os.path.exists(fileinfo.file_path)
 
         if file_ext.lower() == '.dta':
             df,meta = pyreadstat.read_dta(fileinfo.file_path, metadataonly=metadataonly, usecols=usecols, user_missing=True)
         elif file_ext.lower() == '.sav':
             df, meta = pyreadstat.read_sav(fileinfo.file_path, user_missing=True)
         else:
-            return {"error": "file not supported" + file_ext}
+            raise HTTPException(400, detail="file not supported" + file_ext)
+            #return {"error": "file not supported" + file_ext}
         
         return df,meta
             
         
-        
-
-
-    # get basic metadata excluding summary statistics
     def get_metadata(self, fileinfo: FileInfo):
+        """Get basic metadata excluding summary statistics"""
+
         df,meta = self.load_file(fileinfo)
         variables=[]
 
@@ -59,10 +59,9 @@ class DataDictionary:
     
 
 
-
-
-    # get name, label, format
     def get_name_labels(self, fileinfo: FileInfo):
+        """get name, label, format"""
+
         df,meta = self.load_file(fileinfo)
         variables=[]
 
@@ -86,6 +85,7 @@ class DataDictionary:
 
     def infer_column_types(self, df):
         """Infer column types for a dataframe"""
+
         obj_columns= df.select_dtypes('object').columns
 
         for col in obj_columns:
@@ -100,6 +100,7 @@ class DataDictionary:
         
 
     def get_data_dictionary(self, fileinfo: FileInfo):
+        """Get data dictionary for a data file"""
 
         df,meta = self.load_file(fileinfo,metadataonly=False)
        

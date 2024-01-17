@@ -14,18 +14,17 @@ from statsmodels.stats.weightstats import DescrStatsW
 from types import SimpleNamespace
 
 
-
-
-
 class DataDictionaryCsv:
+    """Generate data dictionary from a csv file"""
 
     def load_file(self, fileinfo:FileInfo, metadataonly=True, usecols=None, dtypes=None):
+        """Load a CSV file into a pandas dataframe return dataframe and metadata """
+
         file_ext=os.path.splitext(fileinfo.file_path)[1]
 
         if file_ext.lower() == '.csv':
-            df = pd.read_csv(fileinfo.file_path, usecols=usecols, dtype=dtypes)
-            #df,meta = pyreadstat.read_dta(fileinfo.file_path, metadataonly=metadataonly, usecols=usecols)
-
+            df = pd.read_csv(fileinfo.file_path, usecols=usecols, dtype=dtypes, error_bad_lines=False)
+            
             meta = SimpleNamespace()
             meta.column_names=df.columns.tolist()
             meta.column_names_to_labels=dict()
@@ -39,25 +38,25 @@ class DataDictionaryCsv:
         return df, meta
             
     
-    # def get_data_dictionary(self, fileinfo: FileInfo):
-
-    #     df,meta = self.load_file(fileinfo,metadataonly=False)
-        
-    #     df.fillna(pd.NA,inplace=True)
-    #     df=df.convert_dtypes()
-
-    #     variables = []
-    #     for name in meta.column_names:
-    #         variables.append(self.variable_summary(df,meta,name))
-            
-    #     return {
-    #         'rows':meta.number_rows,
-    #         'columns':meta.number_columns,
-    #         'variables':variables
-    #     }
-
 
     def get_data_dictionary_variable(self, params: DictParams):
+        """
+            Generate data dictionary from a CSV file
+
+            Parameters
+            ----------
+
+            DictParams:
+                file_path: str
+                var_names: List = []
+                weights: List[WeightsColumns] = []
+                missings: dict={} #List[UserMissings] = []
+                dtypes: dict = {}
+                value_labels: dict = {}
+                name_labels: dict = {}
+                export_format: str = "csv"
+        """
+
         if (len(params.dtypes) == 0):
             dtypes=None
         else:
@@ -205,8 +204,6 @@ class DataDictionaryCsv:
                 
         summary_stats=df[variable_name].describe(percentiles=None)
 
-        #summary_stats=df[variable_name].describe(percentiles=None)
-
         return {
             "range": {
                 "UNITS": "REAL",
@@ -295,9 +292,6 @@ class DataDictionaryCsv:
                 "schema": "other"
                 }
 
-        
-
-
 
     def variable_categories(self, meta,variable_name):
         
@@ -316,7 +310,7 @@ class DataDictionaryCsv:
 
 
     def variable_categories_calculated(self, df,meta,variable_name, max_freq=100, user_missings=list()):
-        print("user missings", user_missings)
+        #print("user missings", user_missings)
         is_categorical=False
         categories=[]
         categories_calc=[]
@@ -392,7 +386,7 @@ class DataDictionaryCsv:
         if (variable_categories):
             variable_has_categories=True
 
-        print ("variable_categories",variable_name, variable_categories)        
+        #print ("variable_categories",variable_name, variable_categories)        
 
         return {
             "name": variable_name,
