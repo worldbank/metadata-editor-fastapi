@@ -23,7 +23,7 @@ class DataDictionaryCsv:
         file_ext=os.path.splitext(fileinfo.file_path)[1]
 
         if file_ext.lower() == '.csv':
-            df = pd.read_csv(fileinfo.file_path, usecols=usecols, dtype=dtypes, error_bad_lines=False)
+            df = pd.read_csv(fileinfo.file_path, usecols=usecols, dtype=dtypes)
             
             meta = SimpleNamespace()
             meta.column_names=df.columns.tolist()
