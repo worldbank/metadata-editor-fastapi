@@ -25,7 +25,11 @@ class ExportDatafile:
         print("load_file", fileinfo.file_path)
 
         if file_ext.lower() == '.dta':
-            df,meta = pyreadstat.read_dta(fileinfo.file_path, usecols=usecols)
+            try:
+                df,meta = pyreadstat.read_dta(fileinfo.file_path, usecols=usecols)
+            except UnicodeDecodeError as e:
+                df,meta = pyreadstat.read_dta(fileinfo.file_path, usecols=usecols, encoding="latin1")
+
         elif file_ext.lower() == '.sav':
             df, meta = pyreadstat.read_sav(fileinfo.file_path, usecols=usecols)   
         elif file_ext.lower() == '.csv':

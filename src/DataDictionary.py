@@ -22,7 +22,11 @@ class DataDictionary:
         file_ext=os.path.splitext(fileinfo.file_path)[1]
 
         if file_ext.lower() == '.dta':
-            df,meta = pyreadstat.read_dta(fileinfo.file_path, metadataonly=metadataonly, usecols=usecols, user_missing=True)
+            try:
+                df,meta = pyreadstat.read_dta(fileinfo.file_path, metadataonly=metadataonly, usecols=usecols, user_missing=True)
+            except UnicodeDecodeError as e:
+                df,meta = pyreadstat.read_dta(fileinfo.file_path, metadataonly=metadataonly, usecols=usecols, user_missing=True, encoding="latin1")
+
         elif file_ext.lower() == '.sav':
             df, meta = pyreadstat.read_sav(fileinfo.file_path, user_missing=True)
         else:
@@ -214,7 +218,8 @@ class DataDictionary:
         new[col_name]=df[col_name].replace(user_missings, np.NaN)
 
         #drop na values
-        new.dropna(subset=[col_name], inplace=True)
+        #new.dropna(subset=[col_name], inplace=True)
+        new.dropna(inplace=True)
 
         wdf=DescrStatsW(new[col_name],new[wgt_col_name], ddof=1)
         return {
@@ -381,7 +386,7 @@ class DataDictionary:
         numeric_columns=df.select_dtypes('int').columns
 
         if (variable_name not in numeric_columns):
-            print ("variable not numeric", variable_name)
+            #print ("variable not numeric", variable_name)
             return []
 
         #get value counts [freq] by each unique value

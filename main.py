@@ -1,3 +1,4 @@
+#import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -23,6 +24,11 @@ from fastapi.concurrency import run_in_threadpool
 import shutil
 import glob
 
+from fastapi.exception_handlers import (
+    http_exception_handler,
+    request_validation_exception_handler,
+)
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 
 
@@ -59,6 +65,15 @@ app = FastAPI()
 app.fifo_queue = asyncio.Queue()
 
 app.jobs = {}
+
+
+@app.exception_handler(StarletteHTTPException)
+async def custom_http_exception_handler(request, exc):
+
+    import traceback
+    print(traceback.format_exc())   
+    print(f"error: {repr(exc)}")
+    return await http_exception_handler(request, exc)
 
 
 
@@ -125,19 +140,23 @@ def write_csv_file(fileinfo: FileInfo):
     try:
 
         if file_ext.lower() == '.dta':
-            df,meta = pyreadstat.read_dta(fileinfo.file_path)
+            try:
+                df,meta = pyreadstat.read_dta(fileinfo.file_path)
+            except UnicodeDecodeError as e:
+                df,meta = pyreadstat.read_dta(fileinfo.file_path, encoding="latin1")                
+
         elif file_ext == '.sav':
             df, meta = pyreadstat.read_sav(fileinfo.file_path)
         else:
             return {"error": "file not supported" + file_ext}
-        
     
-        df=df.convert_dtypes()
 
-        #csv_filepath = os.path.join(settings.storage_path, os.path.splitext(os.path.basename(fileinfo.file_path))[0] + '.csv')
+        df=df.convert_dtypes()
         csv_filepath = os.path.join(folder_path,os.path.splitext(os.path.basename(fileinfo.file_path))[0] + '.csv')    
         df.to_csv(csv_filepath, index=False)
+
     except Exception as e:
+        #print("error-writing-csv================= " + str(e))
         raise HTTPException(status_code=400, detail="error writing csv file: " + str(e))
     
     output = {
@@ -236,7 +255,14 @@ async def write_csv_file_callback(jobid, fileinfo: FileInfo):
     loop = asyncio.get_running_loop()
     app.jobs[jobid]["status"]="processing"
 
-    result=await loop.run_in_executor(None, write_csv_file, fileinfo)
+    try:
+        result=await loop.run_in_executor(None, write_csv_file, fileinfo)
+    except Exception as e:
+        print ("exception writing csv file", e)        
+        app.jobs[jobid]["status"]="error"
+        app.jobs[jobid]["error"]="failed to write csv file: " + str(e)
+        return {"status":"failed"}
+
 
     app.jobs[jobid]["status"]="done"
     file_path=os.path.join('jobs', str(jobid) + '.json')
@@ -269,8 +295,10 @@ async def write_data_dictionary_file(jobid, params: DictParams):
         return {"status": "success", "file_path": file_path}
     
     except Exception as e:
+        import traceback
         app.jobs[jobid]["status"]="error"
         app.jobs[jobid]["error"]=str(e)
+        app.jobs[jobid]["traceback"]=traceback.format_exc()
         return {"status": "error", "error": str(e)}
 
 
@@ -357,3 +385,9 @@ def remove_jobs_folder():
         files = glob.glob(folder_path + '/*.json')
         for f in files:
             os.remove(f)
+
+
+
+
+#if __name__ == "__main__":
+#    uvicorn.run(app, host="0.0.0.0", port=8000)
