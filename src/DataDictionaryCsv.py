@@ -12,6 +12,7 @@ from src.DictParams import DictParams
 from src.DataUtils import DataUtils
 from statsmodels.stats.weightstats import DescrStatsW
 from types import SimpleNamespace
+import traceback
 
 
 class DataDictionaryCsv:
@@ -57,56 +58,62 @@ class DataDictionaryCsv:
                 export_format: str = "csv"
         """
 
-        if (len(params.dtypes) == 0):
-            dtypes=None
-        else:
-            dtypes=params.dtypes
+        try:
 
-        if (len(params.var_names) == 0):
-            columns=None
-        else:
-            columns=list(params.var_names)
-            #weights_list
-            for w in params.weights:
-                columns.append(str(w.field))
-                columns.append(str(w.weight_field))
+            if (len(params.dtypes) == 0):
+                dtypes=None
+            else:
+                dtypes=params.dtypes
 
-        df,meta = self.load_file(params,metadataonly=False,usecols=columns, dtypes=dtypes)
+            if (len(params.var_names) == 0):
+                columns=None
+            else:
+                columns=list(params.var_names)
+                #weights_list
+                for w in params.weights:
+                    columns.append(str(w.field))
+                    columns.append(str(w.weight_field))
 
-        df.fillna(pd.NA,inplace=True)
-        #df.fillna(0,inplace=True)
-        df=df.convert_dtypes()
+            df,meta = self.load_file(params,metadataonly=False,usecols=columns, dtypes=dtypes)
 
-        variables = []
-        for name in meta.column_names:
-            user_missings=[]
-            for missing_col, missings in params.missings.items():                
-                if missing_col == name:
-                    user_missings=missings
-                    break
-            variables.append(self.variable_summary(df,meta,name,user_missings=user_missings))
+            df.fillna(pd.NA,inplace=True)
+            #df.fillna(0,inplace=True)
+            df=df.convert_dtypes()
 
-        weights = {}
+            variables = []
+            for name in meta.column_names:
+                user_missings=[]
+                for missing_col, missings in params.missings.items():                
+                    if missing_col == name:
+                        user_missings=missings
+                        break
+                variables.append(self.variable_summary(df,meta,name,user_missings=user_missings))
 
-        if len(params.weights) > 0:
-            for weight in params.weights:            
-                weighted_=self.calc_weighted_mean_n_stddev(df,weight.field, weight.weight_field)
-                weights[weight.field]={
-                        'wgt_freq': self.calc_weighted_freq(df,weight.field, weight.weight_field),
-                        'wgt_mean': weighted_['mean'],
-                        'wgt_stdev': weighted_['stdev']
-                    }
-                    
-        #add weights stats to variables
-        self.apply_weighted_freq_to_variables(variables, weights)
+            weights = {}
+
+            if len(params.weights) > 0:
+                for weight in params.weights:            
+                    weighted_=self.calc_weighted_mean_n_stddev(df,weight.field, weight.weight_field)
+                    weights[weight.field]={
+                            'wgt_freq': self.calc_weighted_freq(df,weight.field, weight.weight_field),
+                            'wgt_mean': weighted_['mean'],
+                            'wgt_stdev': weighted_['stdev']
+                        }
+                        
+            #add weights stats to variables
+            self.apply_weighted_freq_to_variables(variables, weights)
+                
             
-        
-        return {
-            'rows':meta.number_rows,
-            'columns':meta.number_columns,
-            'variables':variables,
-            'weights':weights
-            }
+            return {
+                'rows':meta.number_rows,
+                'columns':meta.number_columns,
+                'variables':variables,
+                'weights':weights
+                }
+
+        except Exception as e:
+            print ("ERROR in get_data_dictionary_variable:", str(e))
+            raise Exception("ERROR in get_data_dictionary_variable: " + str(e))
 
 
     def apply_weighted_freq_to_variables(self, variables, weights_obj):
@@ -114,7 +121,12 @@ class DataDictionaryCsv:
             if (variable['name'] in weights_obj):
                 DataUtils.set_variable_wgt_mean(variable,weighted_mean=weights_obj[variable['name']]['wgt_mean'])
                 DataUtils.set_variable_wgt_stddev(variable,value=weights_obj[variable['name']]['wgt_stdev'])
-                for var_catgry in variable['var_catgry']:            
+                for var_catgry in variable['var_catgry']:
+                    #check for is_missing
+                    if ('is_missing' in var_catgry):
+                        raise Exception("is_missing not supported")
+                        print ("skipping variable with category is_missing ", var_catgry)
+                        continue
                     var_catgry['stats'].append(
                         DataUtils.set_wgt_stats_by_value(weights_obj,field=variable['name'],value=int(var_catgry['value']))
                     )

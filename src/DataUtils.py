@@ -1,3 +1,6 @@
+import traceback
+
+
 class DataUtils:
             
     def sizeof_fmt(num, suffix="B"):
@@ -11,21 +14,29 @@ class DataUtils:
     #
     def set_wgt_stats_by_value( weightsDict,field,value):
         
-        #print ("weightDict", weightsDict, field, value)
+        try:
 
-        if (field not in weightsDict):
-            print ("field not found", field)
-            return {}
-        
-        freq_values = weightsDict[field]['wgt_freq']
+            if (field not in weightsDict):
+                print ("field not found", field)
+                return {}
+            
+            print ("field=", field, "value=", value)
+            freq_values = weightsDict[field]['wgt_freq']
 
-        result={
-            "type": "freq",
-            "wgtd": "wgtd",
-            "value": freq_values[value]
-        }
-        
-        return result
+            print ("freq_values", freq_values)
+
+            result={
+                "type": "freq",
+                "wgtd": "wgtd",
+                "value": freq_values[value]
+            }
+            
+            return result
+
+        except Exception as e:
+            print ("set_wgt_stats_by_value", e)
+            traceback.print_exc()
+            raise Exception(e)
 
         
 

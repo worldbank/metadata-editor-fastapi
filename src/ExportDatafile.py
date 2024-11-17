@@ -138,6 +138,10 @@ class ExportDatafile:
     def parse_value_labels(self, value_labels):
         """convert values to numeric values"""
         output=dict()
+
+        if value_labels is None:
+            return None
+
         for key, value in value_labels.items():
             output[key]=dict()
             for k,v in value.items():
