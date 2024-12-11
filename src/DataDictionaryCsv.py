@@ -301,7 +301,7 @@ class DataDictionaryCsv:
         else:
             return {
                 "type": "unknown",
-                "original_type": meta.dtypes[variable_name],
+                "original_type": str(meta.dtypes[variable_name]),
                 "dtype": str(np.array(df[variable_name].dtype)),
                 "schema": "other"
                 }
