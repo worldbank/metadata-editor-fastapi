@@ -143,7 +143,7 @@ def write_csv_file(fileinfo: FileInfo):
             try:
                 df,meta = pyreadstat.read_dta(fileinfo.file_path)
             except pyreadstat.ReadstatError as e:
-                df,meta = pyreadstat.read_dta(fileinfo.file_path, metadataonly=metadataonly, usecols=usecols, user_missing=True, encoding="latin1")
+                df,meta = pyreadstat.read_dta(fileinfo.file_path, encoding="latin1")
             except UnicodeDecodeError as e:
                 df,meta = pyreadstat.read_dta(fileinfo.file_path, encoding="latin1")                
 
