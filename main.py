@@ -142,6 +142,8 @@ def write_csv_file(fileinfo: FileInfo):
         if file_ext.lower() == '.dta':
             try:
                 df,meta = pyreadstat.read_dta(fileinfo.file_path)
+            except pyreadstat.ReadstatError as e:
+                df,meta = pyreadstat.read_dta(fileinfo.file_path, metadataonly=metadataonly, usecols=usecols, user_missing=True, encoding="latin1")
             except UnicodeDecodeError as e:
                 df,meta = pyreadstat.read_dta(fileinfo.file_path, encoding="latin1")                
 
@@ -372,6 +374,7 @@ async def queue_items(jobid: str):
             job_response['data']=data            
             return job_response
         elif (job["status"]=="error"):
+            print ("job error", job)
             raise HTTPException(status_code=400, detail=job['error'])
         else:
             return job
