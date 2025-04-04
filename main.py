@@ -13,7 +13,8 @@ import re
 import pandas as pd
 import numpy as np
 import os
-from pydantic import BaseSettings
+#from pydantic import BaseSettings
+from pydantic_settings import BaseSettings
 import json
 from src.DictParams import DictParams
 import asyncio
