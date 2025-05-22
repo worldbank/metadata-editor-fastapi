@@ -142,8 +142,7 @@ async def write_csv(fileinfo: FileInfo):
 
 
 def write_csv_file(fileinfo: FileInfo):
-
-
+    
     # Check if the file path is safe
     if not is_safe_path(fileinfo.file_path):
         raise HTTPException(status_code=400, detail="Invalid file path: " + fileinfo.file_path)
@@ -151,7 +150,7 @@ def write_csv_file(fileinfo: FileInfo):
 
     file_ext=os.path.splitext(fileinfo.file_path)[1]
     folder_path=os.path.dirname(fileinfo.file_path)
-    file_exists=os.path.exists(fileinfo.file_path)
+
 
     try:
 
@@ -177,12 +176,6 @@ def write_csv_file(fileinfo: FileInfo):
         raise HTTPException(status_code=400, detail="error writing csv file: " + str(e))
     
     output = {
-        #'path':os.path.abspath(os.getcwd()),
-        #'abspath':os.path.dirname(os.path.abspath(__file__)),
-        #'filename':os.path.basename(fileinfo.file_path),
-        #'file_ext':os.path.splitext(fileinfo.file_path)[1],
-        #'file_path':os.path.dirname(fileinfo.file_path),
-        #'file_exists':os.path.exists(fileinfo.file_path),
         'status':'success',
         'csv_file':csv_filepath,
         'csv_file_size': DataUtils.sizeof_fmt(os.path.getsize(csv_filepath))      
