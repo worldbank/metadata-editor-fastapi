@@ -24,6 +24,7 @@ import datetime
 from fastapi.concurrency import run_in_threadpool
 import shutil
 import glob
+from dotenv import load_dotenv
 
 from fastapi.exception_handlers import (
     http_exception_handler,
@@ -32,13 +33,24 @@ from fastapi.exception_handlers import (
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 
+# Load environment variables from the .env file
+load_dotenv(override=True)
 
 
-class Settings(BaseSettings):
-    storage_path: str = "data"    
+if os.getenv("STORAGE_PATH") is None:
+    raise ValueError("STORAGE_PATH environment variable is not set")
+elif not os.path.exists(os.getenv("STORAGE_PATH")):
+    raise ValueError("STORAGE_PATH does not exist: " + os.getenv("STORAGE_PATH"))
+else:
+    print("STORAGE_PATH:", os.getenv("STORAGE_PATH"))
+
+
+
+#class Settings(BaseSettings):
+#    storage_path: str = "data"    
     
 
-settings = Settings()
+#settings = Settings()
 
 
 class FileInfo(BaseModel):
@@ -131,13 +143,16 @@ async def write_csv(fileinfo: FileInfo):
 
 def write_csv_file(fileinfo: FileInfo):
 
-    file_ext=os.path.splitext(fileinfo.file_path)[1]    
+
+    # Check if the file path is safe
+    if not is_safe_path(fileinfo.file_path):
+        raise HTTPException(status_code=400, detail="Invalid file path: " + fileinfo.file_path)
+
+
+    file_ext=os.path.splitext(fileinfo.file_path)[1]
     folder_path=os.path.dirname(fileinfo.file_path)
     file_exists=os.path.exists(fileinfo.file_path)
 
-    #if not file_exists:
-    #    raise HTTPException(status_code=400, detail="file not found: " + fileinfo.file_path)
-    
     try:
 
         if file_ext.lower() == '.dta':
@@ -159,7 +174,6 @@ def write_csv_file(fileinfo: FileInfo):
         df.to_csv(csv_filepath, index=False)
 
     except Exception as e:
-        #print("error-writing-csv================= " + str(e))
         raise HTTPException(status_code=400, detail="error writing csv file: " + str(e))
     
     output = {
@@ -391,6 +405,29 @@ def remove_jobs_folder():
             os.remove(f)
 
 
+
+def is_safe_path(file_path: str) -> bool:
+    """
+    Validate that the file path is within the storage directory.
+
+    Args:
+        file_path (str): The target file path to validate.
+
+    Returns:
+        bool: True if the path is safe, False otherwise.
+    """
+    # Get the storage path from the environment variable
+    storage_path = os.getenv("STORAGE_PATH")
+
+    if not storage_path:
+        raise ValueError("STORAGE_PATH environment variable is not set")
+
+    # Resolve and normalize paths
+    storage_path = os.path.abspath(os.path.normpath(storage_path))
+    target_path = os.path.abspath(os.path.normpath(file_path))
+
+    # Check if the target path is within the storage path
+    return target_path.startswith(storage_path)
 
 
 #if __name__ == "__main__":
