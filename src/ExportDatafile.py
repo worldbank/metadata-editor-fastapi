@@ -22,8 +22,6 @@ class ExportDatafile:
     def load_file(self, fileinfo:FileInfo, usecols=None, dtypes=None):
         file_ext=os.path.splitext(fileinfo.file_path)[1]
 
-        print("load_file", fileinfo.file_path)
-
         if file_ext.lower() == '.dta':
             try:
                 df,meta = pyreadstat.read_dta(fileinfo.file_path, usecols=usecols)
@@ -51,8 +49,6 @@ class ExportDatafile:
         
 
     def export_file(self, params: DictParams):
-
-        #print ("export_file format", params.export_format)
 
         if (len(params.dtypes) == 0):
             dtypes=None
@@ -109,7 +105,9 @@ class ExportDatafile:
         if not os.path.exists(output_folder_path):
             os.makedirs(output_folder_path)
 
-        print("output_file_path", output_file_path)
+        # check if user has write permissions to the output folder
+        if not os.access(output_folder_path, os.W_OK):
+            raise Exception(f"User does not have write permissions to the output folder: {output_folder_path}")
 
         variable_value_labels=self.parse_value_labels(variable_value_labels)
 
@@ -126,8 +124,6 @@ class ExportDatafile:
         else:
             raise Exception("file format not supported: " + params.export_format)
 
-        print("done writing file")
-                    
         return {
             'status':'success',
             'output_file':output_file_path,
@@ -145,7 +141,12 @@ class ExportDatafile:
         for key, value in value_labels.items():
             output[key]=dict()
             for k,v in value.items():
-                output[key][int(k)]=v
+                if self.is_string_integer(k):
+                    k=int(k)
+                else:
+                    raise ValueError(f"Categorical variable [{key}] has non-numeric category code [{k}]. Only numeric codes are supported.")
+                    
+                output[key][k]=v
 
         return output
 
@@ -158,8 +159,15 @@ class ExportDatafile:
                 pass
         
         return output
-        
 
+    def is_string_integer(self, value):
+        """check if value is a string that can be converted to an integer"""
+        try:
+            int(value)
+            return True
+        except ValueError:
+            return False
+        
 
 
     
