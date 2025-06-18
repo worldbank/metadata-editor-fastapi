@@ -45,4 +45,4 @@ python3 -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 ## License
 
-This project is licensed under the MIT License with a short rider ([IGO-LICENSE-ADDENDUM](IGO-LICENSE-ADDENDUM.md)) that preserves the World Bank’s IGO status without limiting use. Please review both files before reuse or contribution.
+This project is licensed under the MIT License together with the [World Bank IGO Rider](WB-IGO-RIDER.md). The Rider is purely procedural: it reserves all privileges and immunities enjoyed by the World Bank, without adding restrictions to the MIT permissions. Please review both files before using, distributing or contributing.
