@@ -13,8 +13,6 @@ from fastapi.exceptions import HTTPException
 
 
 
-
-
 class DataDictionary:
     """ Generate data dictionary from a data file [Stata, SPSS] """
 
@@ -22,20 +20,161 @@ class DataDictionary:
         file_ext=os.path.splitext(fileinfo.file_path)[1]
 
         if file_ext.lower() == '.dta':
-            try:
-                df,meta = pyreadstat.read_dta(fileinfo.file_path, metadataonly=metadataonly, usecols=usecols, user_missing=True)
-            except pyreadstat.ReadstatError as e:
-                df,meta = pyreadstat.read_dta(fileinfo.file_path, metadataonly=metadataonly, usecols=usecols, user_missing=True, encoding="latin1")
-            except UnicodeDecodeError as e:
-                df,meta = pyreadstat.read_dta(fileinfo.file_path, metadataonly=metadataonly, usecols=usecols, user_missing=True, encoding="latin1")
+            # List of encodings to try in order - includes more robust encodings for problematic files
+            encodings_to_try = [
+                None, 
+                "utf-8", 
+                "latin1", 
+                "cp1252", 
+                "iso-8859-1", 
+                "cp850",
+                "cp437",
+                "windows-1252",
+                "ascii",
+                "utf-16"
+            ]
+            
+            df, meta = None, None
+            last_error = None
+                
+            for encoding in encodings_to_try:
+                try:
+                    if encoding is None:
+                        # Try without specifying encoding first (default behavior)
+                        df, meta = pyreadstat.read_dta(
+                            fileinfo.file_path, 
+                            metadataonly=metadataonly, 
+                            usecols=usecols, 
+                            user_missing=True
+                        )
+                    else:
+                        df, meta = pyreadstat.read_dta(
+                            fileinfo.file_path, 
+                            metadataonly=metadataonly, 
+                            usecols=usecols, 
+                            user_missing=True, 
+                            encoding=encoding
+                        )
+                    break
+                    
+                except (pyreadstat.ReadstatError, UnicodeDecodeError, UnicodeError, ValueError) as e:
+                    last_error = e
+                    print(f"Failed to read DTA file with encoding '{encoding}': {str(e)}")
+                    continue  # Try next encoding
+                
+            # If all encodings failed, raise the last error
+            if df is None or meta is None:
+                # Second attempt: try all encodings again with user_missing=False
+                print("Trying all encodings again with user_missing=False...")
+                
+                for encoding in encodings_to_try:
+                    try:
+                        if encoding is None:
+                            df, meta = pyreadstat.read_dta(
+                                fileinfo.file_path, 
+                                metadataonly=metadataonly, 
+                                usecols=usecols, 
+                                user_missing=False
+                            )
+                        else:
+                            df, meta = pyreadstat.read_dta(
+                                fileinfo.file_path, 
+                                metadataonly=metadataonly, 
+                                usecols=usecols, 
+                                user_missing=False, 
+                                encoding=encoding
+                            )
+                        break
+                        
+                    except (pyreadstat.ReadstatError, UnicodeDecodeError, UnicodeError, ValueError) as e:
+                        last_error = e
+                        print(f"Failed to read DTA file with encoding '{encoding}' (user_missing=False): {str(e)}")
+                        continue  # Try next encoding
+                
+                # If still failed after trying all encodings with and without user_missing 
+                if df is None or meta is None:
+                    raise HTTPException(400, detail=f"Failed to read DTA file. Last error: {str(last_error)}")
 
         elif file_ext.lower() == '.sav':
-            df, meta = pyreadstat.read_sav(fileinfo.file_path, user_missing=True)
+            encodings_to_try = [
+                None, 
+                "utf-8", 
+                "latin1", 
+                "cp1252", 
+                "iso-8859-1", 
+                "cp850",
+                "cp437",
+                "windows-1252",
+                "ascii",
+                "utf-16",
+                "utf-32"
+            ]
+            
+            df, meta = None, None
+            last_error = None
+                
+            for encoding in encodings_to_try:
+                try:
+                    if encoding is None:
+                        df, meta = pyreadstat.read_sav(
+                            fileinfo.file_path, 
+                            user_missing=True,
+                            metadataonly=metadataonly,
+                            usecols=usecols
+                        )
+                    else:
+                        df, meta = pyreadstat.read_sav(
+                            fileinfo.file_path, 
+                            user_missing=True,
+                            metadataonly=metadataonly,
+                            usecols=usecols,
+                            encoding=encoding
+                        )
+                    break  # Success, exit the loop
+                    
+                except (pyreadstat.ReadstatError, UnicodeDecodeError, UnicodeError, ValueError) as e:
+                    last_error = e
+                    print(f"Failed to read SAV file with encoding '{encoding}': {str(e)}")
+                    continue  # Try next encoding
+            
+            # If all encodings failed, raise the last error
+            if df is None or meta is None:
+                # try all encodings again with user_missing=False                
+                for encoding in encodings_to_try:
+                    try:
+                        if encoding is None:
+                            df, meta = pyreadstat.read_sav(
+                                fileinfo.file_path, 
+                                user_missing=False,
+                                metadataonly=metadataonly,
+                                usecols=usecols
+                            )
+                            print("Read SAV file without encoding (user_missing=False)")
+                        else:
+                            df, meta = pyreadstat.read_sav(
+                                fileinfo.file_path, 
+                                user_missing=False,
+                                metadataonly=metadataonly,
+                                usecols=usecols,
+                                encoding=encoding
+                            )
+                            print(f"Read SAV file with encoding '{encoding}' (user_missing=False)")
+                        break  # Success, exit the loop
+                        
+                    except (pyreadstat.ReadstatError, UnicodeDecodeError, UnicodeError, ValueError) as e:
+                        last_error = e
+                        print(f"Failed to read SAV file with encoding '{encoding}' (user_missing=False): {str(e)}")
+                        continue  # Try next encoding
+                
+                # If still failed after second attempt
+                if df is None or meta is None:
+                    raise HTTPException(400, detail=f"Failed to read SAV file with any encoding (tried both user_missing=True and user_missing=False). Last error: {str(last_error)}")
         else:
-            raise HTTPException(400, detail="file not supported" + file_ext)
-            #return {"error": "file not supported" + file_ext}
+            raise HTTPException(400, detail="file not supported: " + file_ext)
         
         return df,meta
+
+
             
         
     def get_metadata(self, fileinfo: FileInfo):
@@ -107,7 +246,6 @@ class DataDictionary:
 
     def get_data_dictionary(self, fileinfo: FileInfo):
         """Get data dictionary for a data file"""
-
         df,meta = self.load_file(fileinfo,metadataonly=False)
        
         df.fillna(pd.NA,inplace=True)
@@ -125,54 +263,104 @@ class DataDictionary:
 
 
     def get_data_dictionary_variable(self, params: DictParams):
-        
-        if (len(params.var_names) == 0):
-            columns=None
-        else:
-            columns=list(params.var_names)
-            #weights_list
-            for w in params.weights:
-                columns.append(str(w.field))
-                columns.append(str(w.weight_field))
+        try:
+            if (len(params.var_names) == 0):
+                columns=None
+            else:
+                columns=list(params.var_names)
+                #weights_list
+                for w in params.weights:
+                    columns.append(str(w.field))
+                    columns.append(str(w.weight_field))
 
-        #print ("columns: ",columns)
-        df,meta = self.load_file(params,metadataonly=False,usecols=columns)
+            #print ("columns: ",columns)
+            df,meta = self.load_file(params,metadataonly=False,usecols=columns)
 
-        df.fillna(pd.NA,inplace=True)
-        #df.fillna(0,inplace=True)
-        df=df.convert_dtypes()
+            #get user missing values from meta
+            #if meta.missing_user_values is not None:
+            #    params.missings = meta.missing_user_values
 
-        variables = []
-        for name in meta.column_names:
-            user_missings=[]
-            for missing_col, missings in params.missings.items():                
-                    if missing_col == name:
-                        user_missings=missings
-                        break
-            variables.append(self.variable_summary(df,meta,name,user_missings=user_missings))
-
-        weights = {}
-
-        if len(params.weights) > 0:
-            for weight in params.weights:            
-                weighted_=self.calc_weighted_mean_n_stddev(df,weight.field, weight.weight_field)
-                weights[weight.field]={
-                        'wgt_freq': self.calc_weighted_freq(df,weight.field, weight.weight_field),
-                        'wgt_mean': weighted_['mean'],
-                        'wgt_stdev': weighted_['stdev']
-                    }
-
-            print("weights: ",weights)           
-        #add weights stats to variables
-        self.apply_weighted_freq_to_variables(variables, weights)
+            #    df.replace(params.missings, np.nan, inplace=True)
             
-        
-        return {
-            'rows':meta.number_rows,
-            'columns':meta.number_columns,
-            'variables':variables,
-            'weights':weights
-            }
+            # for columns with user missings (e.g. .a, .b etc. in Stata)
+            # try to convert to numeric
+            for col in df.columns:
+                # only apply to columns in params.missings
+                if col not in params.missings:
+                    continue
+                
+                if df[col].dtype == 'object' or pd.api.types.is_string_dtype(df[col]):
+                    # test if column can be converted to numeric
+                    try:
+                        # Check if all non-null values can be converted to numeric
+                        non_null_values = df[col].dropna()
+                        if len(non_null_values) > 0:
+                            # Try converting to numeric - if successful with no NaN introduced, convert
+                            converted = pd.to_numeric(non_null_values, errors='coerce')
+                            # If no values became NaN during conversion, all values are numeric
+                            if converted.notna().sum() == len(non_null_values):
+                                df[col] = pd.to_numeric(df[col], errors='coerce')
+                    except Exception:
+                        # If any error occurs, leave column as is
+                        pass
+            
+            
+            try:
+                df.fillna(pd.NA,inplace=True)
+                #df.fillna(0,inplace=True)
+                df=df.convert_dtypes()
+            except Exception as e:
+                raise HTTPException(500, detail=f"Failed to process data types: {str(e)}")
+
+            variables = []
+            try:
+                for name in meta.column_names:
+                    user_missings=[]
+                    for missing_col, missings in params.missings.items():                
+                            if missing_col == name:
+                                user_missings=missings
+                                break
+                    variables.append(self.variable_summary(df,meta,name,user_missings=user_missings))
+            except Exception as e:
+                raise HTTPException(500, detail=f"Failed to process variables: {str(e)}")
+
+            weights = {}
+
+            if len(params.weights) > 0:
+                try:
+                    for weight in params.weights:
+                        # Check if weight fields exist in the data
+                        if weight.field not in df.columns:
+                            raise HTTPException(400, detail=f"Weight field '{weight.field}' not found in data")
+                        if weight.weight_field not in df.columns:
+                            raise HTTPException(400, detail=f"Weight field '{weight.weight_field}' not found in data")
+                        
+                        weighted_=self.calc_weighted_mean_n_stddev(df,weight.field, weight.weight_field)
+                        weights[weight.field]={
+                                'wgt_freq': self.calc_weighted_freq(df,weight.field, weight.weight_field),
+                                'wgt_mean': weighted_['mean'],
+                                'wgt_stdev': weighted_['stdev']
+                            }
+
+                    print("weights: ",weights)           
+                    #add weights stats to variables
+                    self.apply_weighted_freq_to_variables(variables, weights)
+                except Exception as e:
+                    raise HTTPException(500, detail=f"Failed to calculate weights: {str(e)}")
+                
+            
+            return {
+                'rows':meta.number_rows,
+                'columns':meta.number_columns,
+                'variables':variables,
+                'weights':weights
+                }
+        except HTTPException:
+            # Re-raise HTTP exceptions as-is
+            raise
+        except Exception as e:
+            # Catch any other unexpected errors
+            raise HTTPException(500, detail=f"Unexpected error in get_data_dictionary_variable: {str(e)}")
 
 
     def apply_weighted_freq_to_variables(self, variables, weights_obj):
@@ -203,7 +391,7 @@ class DataDictionary:
         new = df[[col_name,wgt_col_name]].copy()
 
         #replace user missings with NaN
-        new[col_name]=df[col_name].replace(user_missings, np.NaN)
+        new[col_name]=df[col_name].replace(user_missings, np.nan)
 
         #drop na values
         new.dropna(subset=[col_name], inplace=True)
@@ -217,7 +405,7 @@ class DataDictionary:
         new = df[[col_name,wgt_col_name]].copy()
 
         #replace user missings with NaN
-        new[col_name]=df[col_name].replace(user_missings, np.NaN)
+        new[col_name]=df[col_name].replace(user_missings, np.nan)
 
         #drop na values
         #new.dropna(subset=[col_name], inplace=True)
@@ -232,7 +420,7 @@ class DataDictionary:
         
     
     #def calc_weighted_mean(self, df,col_name, wgt_col_name,user_missings=list()):
-    #    wgt = df[col_name].replace(user_missings, np.NaN)    
+    #    wgt = df[col_name].replace(user_missings, np.nan)    
     #    return (wgt*df[wgt_col_name]).sum()/df[wgt_col_name].sum()
         
 
@@ -271,7 +459,7 @@ class DataDictionary:
         """Return a dictionary of summary statistics for a variable in a dataframe"""        
         
         if (len(user_missings) > 0):
-            df[variable_name].replace(user_missings, np.NaN, inplace=True)            
+            df[variable_name].replace(user_missings, np.nan, inplace=True)            
 
         summary_stats=df[variable_name].describe(percentiles=None)
 
@@ -306,7 +494,7 @@ class DataDictionary:
         if (len(user_missings) > 0):
             #convert missing values to numeric
             user_missings=self.list_get_numeric_values(user_missings)  
-            df[variable_name].replace(user_missings, np.NaN, inplace=True)
+            df[variable_name].replace(user_missings, np.nan, inplace=True)
 
         summary_stats=df[variable_name].describe(percentiles=None)
 
@@ -345,23 +533,60 @@ class DataDictionary:
 
         variable_type=meta.readstat_variable_types[variable_name]
 
-        if variable_type == 'double' or variable_type == 'float' or variable_type[:3] == 'int':
-            return {
-                "type": "numeric",
-                "schema": "other"
-            }
-        elif variable_type == 'object' or variable_type == 'string':
-            return {
-                "type": "character",
-                "schema": "other"
-            }
-        else:
-            return {
-                "type": "unknown",
-                "original_type": variable_type,
-                "schema": "other"
-            }
+        output={
+            "type": "unknown",
+            "schema": "other",
+            "readstat_type": variable_type,
+            "data_format": meta.original_variable_types[variable_name],
+            "is_date": self.is_date(meta, variable_name)
+        }
 
+        if variable_type == 'double' or variable_type == 'float' or variable_type[:3] == 'int':
+            output["type"] = "numeric"
+            output["schema"] = "other"
+        elif variable_type == 'object' or variable_type == 'string':
+            output["type"] = "character"
+            output["schema"] = "other"
+        else:
+            output["original_type"] = variable_type
+            output["schema"] = "other"
+        
+        return output
+
+
+
+    def is_date(self, meta, variable_name):
+        """Return True if the variable is a date (Stata, SPSS, or SAS)"""
+        data_format_original = meta.original_variable_types.get(variable_name)
+
+        if not isinstance(data_format_original, str):
+            return False
+
+        stata_date_formats = ("%td", "%tm", "%tq", "%tw", "%th", "%tc", "%ty")
+        spss_date_prefixes = ("DATE", "ADATE", "EDATE", "SDATE", "JDATE", "DATETIME", "TIME", "DTIME", "WKDAY", "MONTH")
+        sas_date_prefixes = ("DATE", "DATETIME", "YYMMDD", "MMDDYY", "DDMMYY", "TOD", "DT", "DTDATE", "TIME", "WEEKDATE", "WORDDATE")
+
+        fmt = data_format_original.strip().upper().rstrip('.')
+
+        # Check Stata (starts with %t)
+        if data_format_original.startswith(stata_date_formats):
+            return True
+        # Check SPSS
+        elif any(fmt.startswith(prefix) for prefix in spss_date_prefixes):
+            return True
+        # Check SAS
+        elif any(fmt.startswith(prefix) for prefix in sas_date_prefixes):
+            return True
+        else:
+            return False
+
+
+    def variable_missing_values(self, meta,variable_name):
+        """Return the missing values for a variable in a dataframe"""
+        if variable_name in meta.missing_user_values:
+            return meta.missing_user_values[variable_name]
+        else:
+            return []
 
 
     def variable_categories(self, meta,variable_name):
@@ -464,6 +689,10 @@ class DataDictionary:
             #"var_dcml": self.variable_decimal_percision(meta,variable_name),
             "var_intrvl": self.variable_measure(meta,variable_name,variable_has_categories),
             "loc_width": meta.variable_display_width[variable_name],
+            #"missing_values": self.variable_missing_values(meta,variable_name),
+            "var_invalrng":{
+                "values": self.variable_missing_values(meta,variable_name)
+            },
             #TODO
             #"var_invalrng": {
             #    "values": [
@@ -507,6 +736,7 @@ class DataDictionary:
             #    }
             #],
             "var_format": self.variable_format(meta,variable_name),
+            "var_format_original": self.variable_format(meta,variable_name)           
                 # {
                 #   "type": "numeric",
                 #   "schema": "other"

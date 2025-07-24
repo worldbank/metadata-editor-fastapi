@@ -22,6 +22,7 @@ class DataDictionaryCsv:
         """Load a CSV file into a pandas dataframe return dataframe and metadata """
 
         file_ext=os.path.splitext(fileinfo.file_path)[1]
+        #print( "reading csv file", fileinfo.file_path, "with usecols", usecols, "and dtypes", dtypes)
 
         if file_ext.lower() == '.csv':
             df = pd.read_csv(fileinfo.file_path, usecols=usecols, dtype=dtypes)
@@ -59,7 +60,6 @@ class DataDictionaryCsv:
         """
 
         try:
-
             if (len(params.dtypes) == 0):
                 dtypes=None
             else:
@@ -76,9 +76,38 @@ class DataDictionaryCsv:
 
             df,meta = self.load_file(params,metadataonly=False,usecols=columns, dtypes=dtypes)
 
-            df.fillna(pd.NA,inplace=True)
-            #df.fillna(0,inplace=True)
-            df=df.convert_dtypes()
+
+            # if missings are defined, replace them with pd.NA
+            if params.missings:
+                df = df.replace(params.missings, np.nan)
+
+            # This fillna is redundant since we're already replacing with np.nan
+            #df.fillna(np.nan,inplace=True)
+            
+            # for columns that have missings, try to convert to numeric
+            for col in df.columns:
+                # only apply to columns in params.missings
+                if col not in params.missings:
+                    continue
+                
+                if df[col].dtype == 'object' or pd.api.types.is_string_dtype(df[col]):
+                    # test if column can be converted to numeric
+                    try:
+                        # Check if all non-null values can be converted to numeric
+                        non_null_values = df[col].dropna()
+                        if len(non_null_values) > 0:
+                            # Try converting to numeric - if successful with no NaN introduced, convert
+                            converted = pd.to_numeric(non_null_values, errors='coerce')
+                            # If no values became NaN during conversion, all values are numeric
+                            if converted.notna().sum() == len(non_null_values):
+                                df[col] = pd.to_numeric(df[col], errors='coerce')
+                    except Exception:
+                        # If any error occurs, leave column as is
+                        pass
+
+            
+            # Use pandas' best-guess type inference
+            df = df.convert_dtypes()
 
             variables = []
             for name in meta.column_names:
@@ -148,8 +177,8 @@ class DataDictionaryCsv:
         #create a copy of df
         new = df[[col_name,wgt_col_name]].copy()
 
-        #replace user missings with NaN
-        new[col_name]=df[col_name].replace(user_missings, np.NaN)
+        #replace user missings with NaN - use proper pandas method
+        new[col_name] = new[col_name].replace(user_missings, np.nan)
 
         #drop na values
         new.dropna(subset=[col_name], inplace=True)
@@ -163,8 +192,8 @@ class DataDictionaryCsv:
         #create a copy of df
         new = df[[col_name,wgt_col_name]].copy()
 
-        #replace user missings with NaN
-        new[col_name]=df[col_name].replace(user_missings, np.NaN)
+        #replace user missings with NaN - use proper pandas method
+        new[col_name] = new[col_name].replace(user_missings, np.nan)
 
         #drop na values
         new.dropna(inplace=True)
@@ -178,7 +207,7 @@ class DataDictionaryCsv:
         
     
     #def calc_weighted_mean(self, df,col_name, wgt_col_name,user_missings=list()):
-    #    wgt = df[col_name].replace(user_missings, np.NaN)    
+    #    wgt = df[col_name].replace(user_missings, np.nan)    
     #    return (wgt*df[wgt_col_name]).sum()/df[wgt_col_name].sum()
         
     
@@ -214,7 +243,8 @@ class DataDictionaryCsv:
         """Return a dictionary of summary statistics for a variable in a dataframe"""        
         
         if (len(user_missings) > 0):
-            df[variable_name].replace(user_missings, np.NaN, inplace=True)            
+            # Use proper pandas method to avoid FutureWarning
+            df[variable_name] = df[variable_name].replace(user_missings, np.nan)            
                 
         summary_stats=df[variable_name].describe(percentiles=None)
 
@@ -245,16 +275,18 @@ class DataDictionaryCsv:
     def variable_sumstats(self, df,meta,variable_name, user_missings=list()): 
         if (len(user_missings) > 0):
             user_missings=self.list_get_numeric_values(user_missings)
-
-            df[variable_name].replace(user_missings, np.NaN, inplace=True)
+            # Use proper pandas method to avoid FutureWarning
+            df[variable_name] = df[variable_name].replace(user_missings, np.nan)
 
         summary_stats=df[variable_name].describe(percentiles=None)
 
         count_=df[variable_name].count()
         sum_=df[variable_name].isna().sum()
 
-
-        return [
+        # Check if column is numeric to determine which stats to include
+        if is_numeric_dtype(df[variable_name]):
+            # For numeric columns, include all statistics
+            return [
                 {
                     "type": "vald",
                     "value": str(count_)
@@ -278,6 +310,30 @@ class DataDictionaryCsv:
                 {
                     "type": "stdev",
                     "value": str(summary_stats.get('std'))
+                }
+            ]
+        else:
+            # For string columns, only include basic counts and frequency stats
+            return [
+                {
+                    "type": "vald",
+                    "value": str(count_)
+                },
+                {
+                    "type": "invd",
+                    "value": str(sum_)
+                },
+                {
+                    "type": "unique",
+                    "value": str(summary_stats.get('unique', 'N/A'))
+                },
+                {
+                    "type": "top",
+                    "value": str(summary_stats.get('top', 'N/A'))
+                },
+                {
+                    "type": "freq",
+                    "value": str(summary_stats.get('freq', 'N/A'))
                 }
             ]
 
@@ -324,7 +380,6 @@ class DataDictionaryCsv:
 
 
     def variable_categories_calculated(self, df,meta,variable_name, max_freq=100, user_missings=list()):
-        #print("user missings", user_missings)
         is_categorical=False
         categories=[]
         categories_calc=[]
@@ -400,8 +455,6 @@ class DataDictionaryCsv:
         if (variable_categories):
             variable_has_categories=True
 
-        #print ("variable_categories",variable_name, variable_categories)        
-
         return {
             "name": variable_name,
             "labl": meta.column_names_to_labels.get(variable_name),
@@ -460,3 +513,82 @@ class DataDictionaryCsv:
             #    "values": []
             #}
         }
+
+    def is_categorical_column(self, df, meta, variable_name, max_unique_ratio=0.05, max_unique_count=50):
+        """
+        Determine if a column should be treated as categorical
+        
+        Parameters:
+        -----------
+        df : pandas.DataFrame
+            The dataframe containing the column
+        meta : SimpleNamespace  
+            Metadata object
+        variable_name : str
+            Name of the column to check
+        max_unique_ratio : float
+            Maximum ratio of unique values to total values (default: 0.05 = 5%)
+        max_unique_count : int
+            Maximum number of unique values to consider categorical (default: 50)
+            
+        Returns:
+        --------
+        bool : True if column should be treated as categorical
+        """
+        
+        # 1. Check if explicitly defined as categorical in metadata
+        if variable_name in meta.variable_value_labels:
+            return True
+            
+        # 2. Get basic column info
+        total_rows = len(df[variable_name])
+        unique_count = df[variable_name].nunique()
+        unique_ratio = unique_count / total_rows if total_rows > 0 else 0
+        
+        # 3. String/object columns with reasonable unique values are likely categorical
+        if is_string_dtype(df[variable_name]) or df[variable_name].dtype == 'object':
+            return unique_count <= max_unique_count
+            
+        # 4. For numeric columns, check if they have limited unique values
+        if is_numeric_dtype(df[variable_name]):
+            # Small number of unique values relative to total
+            if unique_ratio <= max_unique_ratio and unique_count <= max_unique_count:
+                return True
+                
+            # Integer columns with small range might be categorical (e.g., 1-5 ratings)
+            if df[variable_name].dtype in ['int8', 'int16', 'int32', 'int64']:
+                value_range = df[variable_name].max() - df[variable_name].min()
+                if value_range <= 20 and unique_count <= max_unique_count:
+                    return True
+                    
+        return False
+
+    def get_categorical_info(self, df, meta, variable_name):
+        """
+        Get categorical information for a column
+        
+        Returns:
+        --------
+        dict : Contains is_categorical, unique_count, unique_ratio, and categories
+        """
+        total_rows = len(df[variable_name])
+        unique_count = df[variable_name].nunique()
+        unique_ratio = unique_count / total_rows if total_rows > 0 else 0
+        
+        is_categorical = self.is_categorical_column(df, meta, variable_name)
+        
+        categories = []
+        if is_categorical:
+            # Get value counts for categorical variables
+            value_counts = df[variable_name].value_counts()
+            categories = [{"value": str(val), "frequency": freq} 
+                         for val, freq in value_counts.items()]
+        
+        return {
+            "is_categorical": is_categorical,
+            "unique_count": unique_count,
+            "unique_ratio": unique_ratio,
+            "total_rows": total_rows,
+            "categories": categories
+        }
+            

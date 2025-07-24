@@ -141,6 +141,18 @@ async def write_csv(fileinfo: FileInfo):
     
 
 
+def convert_mixed_column(series):
+    def try_convert(x):
+        try:
+            # Also handles floats that are whole numbers (e.g., 18.0 -> 18)
+            if isinstance(x, float) and x.is_integer():
+                return int(x)
+            return int(str(x)) if str(x).lstrip("-").isdigit() else x
+        except (ValueError, TypeError):
+            return x
+
+    return series.apply(try_convert)
+
 def write_csv_file(fileinfo: FileInfo):
     
     # Check if the file path is safe
@@ -155,20 +167,88 @@ def write_csv_file(fileinfo: FileInfo):
     try:
 
         if file_ext.lower() == '.dta':
-            try:
-                df,meta = pyreadstat.read_dta(fileinfo.file_path)
-            except pyreadstat.ReadstatError as e:
-                df,meta = pyreadstat.read_dta(fileinfo.file_path, encoding="latin1")
-            except UnicodeDecodeError as e:
-                df,meta = pyreadstat.read_dta(fileinfo.file_path, encoding="latin1")                
+            # Try multiple encodings for robust file reading
+            encodings_to_try = [None, "utf-8", "latin1", "cp1252", "iso-8859-1", "cp850"]
+            df, meta = None, None
+            last_error = None
+            
+            for encoding in encodings_to_try:
+                try:
+                    print(f"Trying to read DTA file with encoding: {encoding}")
+                    df, meta = pyreadstat.read_dta(fileinfo.file_path, encoding=encoding, user_missing=True)
+                    print(f"Successfully read DTA file with encoding: {encoding}")
+                    break
+                except (pyreadstat.ReadstatError, UnicodeDecodeError, ValueError) as e:
+                    print(f"Failed to read with encoding {encoding}: {str(e)}")
+                    last_error = e
+                    continue
+            
+            # If all encodings failed, try without user_missing=True as fallback
+            if df is None:
+                print("All encodings failed with user_missing=True, trying without user_missing...")
+                for encoding in encodings_to_try:
+                    try:
+                        print(f"Trying to read DTA file with encoding: {encoding} (user_missing=False)")
+                        df, meta = pyreadstat.read_dta(fileinfo.file_path, encoding=encoding, user_missing=False)
+                        print(f"Successfully read DTA file with encoding: {encoding} (user_missing=False)")
+                        break
+                    except (pyreadstat.ReadstatError, UnicodeDecodeError, ValueError) as e:
+                        print(f"Failed to read with encoding {encoding} (user_missing=False): {str(e)}")
+                        last_error = e
+                        continue
+            
+            if df is None:
+                raise Exception(f"Failed to read DTA file with any encoding. Last error: {str(last_error)}")                
 
         elif file_ext == '.sav':
-            df, meta = pyreadstat.read_sav(fileinfo.file_path)
+            # Try multiple encodings for robust SAV file reading
+            encodings_to_try = [None, "utf-8", "latin1", "cp1252", "iso-8859-1", "cp850"]
+            df, meta = None, None
+            last_error = None
+            
+            for encoding in encodings_to_try:
+                try:
+                    print(f"Trying to read SAV file with encoding: {encoding}")
+                    df, meta = pyreadstat.read_sav(fileinfo.file_path, encoding=encoding, user_missing=True)
+                    print(f"Successfully read SAV file with encoding: {encoding}")
+                    break
+                except (pyreadstat.ReadstatError, UnicodeDecodeError, ValueError) as e:
+                    print(f"Failed to read SAV with encoding {encoding}: {str(e)}")
+                    last_error = e
+                    continue
+            
+            # If all encodings failed, try without user_missing=True as fallback
+            if df is None:
+                print("All encodings failed with user_missing=True, trying without user_missing...")
+                for encoding in encodings_to_try:
+                    try:
+                        print(f"Trying to read SAV file with encoding: {encoding} (user_missing=False)")
+                        df, meta = pyreadstat.read_sav(fileinfo.file_path, encoding=encoding, user_missing=False)
+                        print(f"Successfully read SAV file with encoding: {encoding} (user_missing=False)")
+                        break
+                    except (pyreadstat.ReadstatError, UnicodeDecodeError, ValueError) as e:
+                        print(f"Failed to read SAV with encoding {encoding} (user_missing=False): {str(e)}")
+                        last_error = e
+                        continue
+            
+            if df is None:
+                raise Exception(f"Failed to read SAV file with any encoding. Last error: {str(last_error)}")
         else:
             return {"error": "file not supported" + file_ext}
     
 
         df=df.convert_dtypes()
+
+        # Convert mixed columns to numeric if they contain user-defined missings
+        for col in df.columns:
+            #check  meta for user-defined missings
+            if col in meta.missing_user_values:
+                #convert mixed columns to numeric
+                df[col] = convert_mixed_column(df[col])
+                print(f"Converted mixed column: {col}", df[col].dtype)
+                continue
+
+
         csv_filepath = os.path.join(folder_path,os.path.splitext(os.path.basename(fileinfo.file_path))[0] + '.csv')    
         df.to_csv(csv_filepath, index=False)
 
