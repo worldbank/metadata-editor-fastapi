@@ -33,15 +33,46 @@ uvicorn==0.17.*
 
 ## Installation
 
+### Option 1: Direct Installation
 ```
 pip install -r requirements.txt
 ```
 
+### Option 2: Using Virtual Environment (Recommended)
+```bash
+# Create a virtual environment
+python3 -m venv venv
+
+# Activate the virtual environment
+source venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# To deactivate the virtual environment when done
+deactivate
+```
+
 ## Start web app
 
-```
+### If using Option 1 (Direct Installation):
+```bash
 python3 -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
+
+### If using Option 2 (Virtual Environment):
+```bash
+# Make sure the virtual environment is activated
+source venv/bin/activate
+
+# Start the application
+python3 -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
+
+# When done, deactivate the virtual environment
+deactivate
+```
+
+The application will be available at `http://localhost:8000`
 
 ## License
 
