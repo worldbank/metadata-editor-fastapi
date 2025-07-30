@@ -42,7 +42,6 @@ class ExportDatafile:
             meta.dtypes=df.dtypes.to_dict()
         else:
             raise Exception("file not supported" + file_ext)
-            #return {"error": "file not supported" + file_ext}
         
         return df, meta
             
@@ -56,10 +55,8 @@ class ExportDatafile:
             dtypes=params.dtypes
 
         if (len(params.missings) == 0):
-            missing_ranges=None
-        else:
-            missing_ranges=params.missings
-
+            params.missings=None
+        
         #check if variable_value_labels exists
         if (len(params.value_labels) == 0):
             variable_value_labels=None
@@ -72,7 +69,12 @@ class ExportDatafile:
             columns=list(params.var_names)
 
         df,meta = self.load_file(params,usecols=columns, dtypes=dtypes)
+        variable_value_labels=self.parse_value_labels(variable_value_labels)
 
+        # get all single character value labels that are not numeric and add them to missing_value_labels
+        # this is to handle user-defined missing values in Stata and SPSS
+        # e.g. .a, .b, .c etc.        
+        params.missings=self.combine_missing_values_with_value_labels(variable_value_labels, params.missings)
 
         # Note: for exporting to STATA, SPSS
         #
@@ -88,7 +90,6 @@ class ExportDatafile:
             if col in params.missings:
                 #convert mixed columns to numeric
                 df[col] = self.convert_mixed_column(df[col])
-                #print (f"Converted mixed column: {col}", df[col].dtype)
                 continue
             
             if df[col].dtype == 'object' or pd.api.types.is_string_dtype(df[col]):
@@ -131,14 +132,13 @@ class ExportDatafile:
         if not os.access(output_folder_path, os.W_OK):
             raise Exception(f"User does not have write permissions to the output folder: {output_folder_path}")
 
-        variable_value_labels=self.parse_value_labels(variable_value_labels)
-        
+
         if params.export_format == 'csv':
             df.to_csv(output_file_path, index=False)
         elif params.export_format in ['dta','stata']:
-            pyreadstat.write_dta(df, output_file_path, missing_user_values=missing_ranges, variable_value_labels=variable_value_labels, column_labels=params.name_labels)
+            pyreadstat.write_dta(df, output_file_path, missing_user_values=params.missings, variable_value_labels=variable_value_labels, column_labels=params.name_labels)
         elif params.export_format in ['spss','sav']:
-            pyreadstat.write_sav(df, output_file_path, missing_ranges=missing_ranges, variable_value_labels=variable_value_labels, column_labels=params.name_labels)
+            pyreadstat.write_sav(df, output_file_path, missing_ranges=params.missings, variable_value_labels=variable_value_labels, column_labels=params.name_labels)
         elif params.export_format == 'json':
             df.to_json(output_file_path, orient='records')
         elif params.export_format in ['sas','xpt']:
@@ -158,6 +158,7 @@ class ExportDatafile:
         Convert a pandas Series with mixed string values:
         - Strings representing integers (positive or negative) are converted to int
         - Non-numeric strings remain unchanged
+        - If any data in the column is a float, convert all numeric values to float
 
         Parameters
         ----------
@@ -170,16 +171,60 @@ class ExportDatafile:
             A new Series with numeric strings converted to int, others unchanged.
         """
 
-        print("Converting mixed column with user missings", series.name)
+        contains_float = series.apply(lambda x: isinstance(pd.to_numeric(x, errors='coerce'), float)).any()
 
         def try_convert(x):
             try:
-                return int(x)
+                # If there's any float, convert all numeric values to float
+                if contains_float:
+                    return float(x) if isinstance(x, (str, int, float)) and pd.to_numeric(x, errors='coerce') is not None else x
+                # Otherwise, convert numeric strings to int
+                elif isinstance(x, str) and x.isdigit():
+                    return int(x)
+                else:
+                    return x  # Non-numeric strings remain unchanged
             except (ValueError, TypeError):
-                print (f"Could not convert {x} to int, keeping as is")
+                print(f"Could not convert {x} to numeric, keeping as is")
                 return x
 
-        return series.apply(try_convert)
+        return series.map(try_convert)
+    
+
+    def combine_missing_values_with_value_labels(self, variable_value_labels, missing_values):
+        """
+        Update the missing_values dictionary with single character value labels
+        from variable_value_labels.        
+        e.g. .a, .b, .c etc.
+        
+        Parameters
+        ----------
+        variable_value_labels : dict
+            Dictionary of variable value labels.
+        missing_values : dict
+            Dictionary of user-defined missing values.
+        
+        Returns
+        -------
+        dict
+            Updated missing_values dictionary with combined values.
+        """
+        
+        if variable_value_labels is None:
+            return missing_values
+        
+        combined_missing_values = missing_values.copy() if missing_values else {}                
+        for var, labels in variable_value_labels.items():
+            # Check if any label is a single character and not numeric
+            for key, value in labels.items():
+                # check if key is between 'a' and 'z'
+                if isinstance(key, str) and len(key) == 1 and key.isalpha():
+                    # If it's a single character, add it to missing_values
+                    if var not in combined_missing_values:
+                        combined_missing_values[var] = []
+                    combined_missing_values[var].append(key)
+
+        return combined_missing_values
+
 
     def parse_value_labels(self, value_labels):
         """convert values to numeric values"""
