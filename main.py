@@ -25,12 +25,87 @@ from fastapi.concurrency import run_in_threadpool
 import shutil
 import glob
 from dotenv import load_dotenv
+import traceback
+import logging
 
 from fastapi.exception_handlers import (
     http_exception_handler,
     request_validation_exception_handler,
 )
 from starlette.exceptions import HTTPException as StarletteHTTPException
+
+# Configure logging
+def setup_logging():
+    """Configure logging based on environment variables"""
+    # Get logging configuration from environment variables
+    log_level = os.getenv("LOG_LEVEL", "ERROR").upper()
+    log_format = os.getenv("LOG_FORMAT", "simple")
+    log_to_file = os.getenv("LOG_TO_FILE", "false").lower() == "true"
+    
+    # Generate default log file path with date-based naming
+    if log_to_file:
+        # Create logs directory if it doesn't exist
+        logs_dir = "logs"
+        if not os.path.exists(logs_dir):
+            os.makedirs(logs_dir)
+        
+        # Generate date-based filename
+        from datetime import datetime
+        current_date = datetime.now().strftime("%Y-%m-%d")
+        default_log_file = os.path.join(logs_dir, f"error-{current_date}.log")
+    else:
+        default_log_file = "app.log"  # Fallback for when file logging is disabled
+    
+    log_file_path = os.getenv("LOG_FILE_PATH", default_log_file)
+    
+    # Convert string log level to logging constant
+    level_map = {
+        "DEBUG": logging.DEBUG,
+        "INFO": logging.INFO,
+        "WARNING": logging.WARNING,
+        "ERROR": logging.ERROR,
+        "CRITICAL": logging.CRITICAL
+    }
+    
+    log_level_constant = level_map.get(log_level, logging.ERROR)
+    
+    # Define log formats
+    formats = {
+        "simple": "%(levelname)s - %(message)s",
+        "detailed": "%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s",
+        "timestamp": "%(asctime)s - %(levelname)s - %(message)s",
+        "minimal": "%(levelname)s: %(message)s"
+    }
+    
+    log_format_string = formats.get(log_format, formats["simple"])
+    
+    # Configure logging
+    if log_to_file:
+        # Ensure the directory for the log file exists
+        log_dir = os.path.dirname(log_file_path)
+        if log_dir and not os.path.exists(log_dir):
+            os.makedirs(log_dir)
+            
+        logging.basicConfig(
+            level=log_level_constant,
+            format=log_format_string,
+            handlers=[
+                logging.FileHandler(log_file_path),
+                logging.StreamHandler()  # Also log to console
+            ]
+        )
+        print(f"Logging configured: Level={log_level}, Format={log_format}, File={log_file_path}")
+    else:
+        logging.basicConfig(
+            level=log_level_constant,
+            format=log_format_string
+        )
+        print(f"Logging configured: Level={log_level}, Format={log_format}")
+    
+    return logging.getLogger(__name__)
+
+# Setup logging with configuration
+logger = setup_logging()
 
 
 # Load environment variables from the .env file
@@ -648,6 +723,9 @@ async def export_data_file(jobid, params: DictParams):
     app.jobs[jobid]["status"]="processing"
 
     try:
+        # Debug logging (only shown when LOG_LEVEL=DEBUG)
+        logger.debug(f"Starting export for job {jobid} with params: {params}")
+        
         result=await loop.run_in_executor(None, exportDF.export_file, params)
 
         app.jobs[jobid]["status"]="done"
@@ -656,13 +734,35 @@ async def export_data_file(jobid, params: DictParams):
         with open(file_path, 'w') as outfile:
             json.dump(result, outfile)
         
+        logger.debug(f"Export completed successfully for job {jobid}")
         return {"status": "success", "file_path": file_path}
     
     except Exception as e:
+        # Capture detailed error information
+        error_info = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "traceback": traceback.format_exc(),
+            "function": "export_data_file",
+            "jobid": jobid,
+            "params": {
+                "file_path": params.file_path,
+                "var_names": params.var_names,
+                "weights": params.weights,
+                "missings": params.missings,
+                "dtypes": params.dtypes,
+                "value_labels": params.value_labels,
+                "export_format": params.export_format
+            }
+        }
+        
+        logger.error(f"Export failed for job {jobid}: {error_info}")
+        
         app.jobs[jobid]["status"]="error"
         app.jobs[jobid]["error"]=str(e)
+        app.jobs[jobid]["error_details"]=error_info
         app.jobs[jobid]["completed_at"] = datetime.datetime.now().isoformat()
-        return {"status": "error", "error": str(e)}
+        return {"status": "error", "error": str(e), "error_details": error_info}
 
 
 @app.get("/jobs")
@@ -730,7 +830,12 @@ async def queue_items(jobid: str):
             return job_response
         elif (job["status"]=="error"):
             print ("job error", job)
-            raise HTTPException(status_code=400, detail=job['error'])
+            # Include detailed error information if available
+            if 'error_details' in job:
+                error_detail = f"{job['error']}\n\nDetailed Error Information:\n{json.dumps(job['error_details'], indent=2)}"
+                raise HTTPException(status_code=400, detail=error_detail)
+            else:
+                raise HTTPException(status_code=400, detail=job['error'])
         else:
             return job
 
