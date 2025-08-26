@@ -25,19 +25,41 @@ class DataDictionaryCsv:
         #print( "reading csv file", fileinfo.file_path, "with usecols", usecols, "and dtypes", dtypes)
 
         if file_ext.lower() == '.csv':
-            df = pd.read_csv(fileinfo.file_path, usecols=usecols, dtype=dtypes)
+            encodings_to_try = [None, "utf-8", "latin1", "cp1252", "iso-8859-1", "cp850"]
+            last_error = None
             
-            meta = SimpleNamespace()
-            meta.column_names=df.columns.tolist()
-            meta.column_names_to_labels=dict()
-            meta.number_rows=df.shape[0]
-            meta.number_columns=df.shape[1]
-            meta.variable_value_labels=dict()
-            meta.dtypes=df.dtypes.to_dict()
+            for encoding in encodings_to_try:
+                try:
+                    if encoding is None:
+                        df = pd.read_csv(fileinfo.file_path, usecols=usecols, dtype=dtypes)
+                    else:
+                        df = pd.read_csv(fileinfo.file_path, usecols=usecols, dtype=dtypes, encoding=encoding)
+                    
+                    meta = SimpleNamespace()
+                    meta.column_names=df.columns.tolist()
+                    meta.column_names_to_labels=dict()
+                    meta.number_rows=df.shape[0]
+                    meta.number_columns=df.shape[1]
+                    meta.variable_value_labels=dict()
+                    meta.dtypes=df.dtypes.to_dict()
+                    
+                    return df, meta
+                    
+                except UnicodeDecodeError as e:
+                    last_error = e
+                    print(f"Failed to read CSV file with encoding '{encoding}': {str(e)}")
+                    continue
+                except Exception as e:
+                    last_error = e
+                    print(f"Failed to read CSV file with encoding '{encoding}': {str(e)}")
+                    continue
+            
+            if last_error:
+                raise Exception(f"Failed to read CSV file with any encoding. Last error: {str(last_error)}")
+            else:
+                raise Exception("Failed to read CSV file with any encoding")
         else:
             return {"error": "file not supported" + file_ext}
-        
-        return df, meta
             
     
 
