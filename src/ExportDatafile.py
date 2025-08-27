@@ -204,7 +204,18 @@ class ExportDatafile:
             elif params.export_format in ['dta','stata']:
                 pyreadstat.write_dta(df, output_file_path, missing_user_values=params.missings, variable_value_labels=variable_value_labels, column_labels=params.name_labels)
             elif params.export_format in ['spss','sav']:
-                pyreadstat.write_sav(df, output_file_path, missing_ranges=params.missings, variable_value_labels=variable_value_labels, column_labels=params.name_labels)
+                # For SPSS export, convert special missing values to system missings
+                # SPSS doesn't support special missing values like 'a', 'b', 'c'
+                df_for_spss, spss_missing_ranges = self.prepare_data_for_spss_export(df, params.missings)
+                
+                # Validate that special missing values were properly converted
+                if not self.validate_spss_export_data(df_for_spss, params.missings):
+                    logger.warning("Special missing values detected in data prepared for SPSS export - this may cause issues")
+                
+                # Prepare value labels for SPSS export (only numeric keys allowed)
+                spss_value_labels = self.prepare_value_labels_for_spss_export(variable_value_labels)
+                
+                pyreadstat.write_sav(df_for_spss, output_file_path, missing_ranges=spss_missing_ranges, variable_value_labels=spss_value_labels, column_labels=params.name_labels)
             elif params.export_format == 'json':
                 df.to_json(output_file_path, orient='records')
             elif params.export_format in ['sas','xpt']:
@@ -394,6 +405,149 @@ class ExportDatafile:
             return True
         except ValueError:
             return False
+        
+
+    def prepare_data_for_spss_export(self, df, missing_values):
+        """
+        Prepare data for SPSS export by converting special missing values to system missings.
+        SPSS doesn't support special missing values like 'a', 'b', 'c' - they must be converted to NaN.
+        
+        Parameters
+        ----------
+        df : pd.DataFrame
+            The dataframe to prepare for SPSS export.
+        missing_values : dict
+            Dictionary of missing values per variable.
+            
+        Returns
+        -------
+        tuple
+            (df_for_spss, spss_missing_ranges) where df_for_spss has special missings converted to NaN
+            and spss_missing_ranges only contains numeric missing values.
+        """
+        try:
+            df_for_spss = df.copy()
+            spss_missing_ranges = {}
+            
+            if missing_values:
+                for var, missing_vals in missing_values.items():
+                    if var in df_for_spss.columns:
+                        # Convert special missing values to NaN
+                        for missing_val in missing_vals:
+                            if isinstance(missing_val, str) and missing_val.isalpha():
+                                # Replace special missing values with NaN
+                                df_for_spss[var] = df_for_spss[var].replace(missing_val, np.nan).infer_objects(copy=False)
+                                logger.debug(f"Converted special missing value '{missing_val}' to NaN for variable '{var}' in SPSS export")
+                        
+                        # Only keep numeric missing values for SPSS missing_ranges
+                        numeric_missings = [val for val in missing_vals if not (isinstance(val, str) and val.isalpha())]
+                        if numeric_missings:
+                            spss_missing_ranges[var] = numeric_missings
+            
+            logger.debug(f"SPSS export preparation - converted special missings to NaN, missing_ranges: {spss_missing_ranges}")
+            return df_for_spss, spss_missing_ranges
+            
+        except Exception as e:
+            error_info = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "traceback": traceback.format_exc(),
+                "function": "prepare_data_for_spss_export",
+                "missing_values": missing_values
+            }
+            logger.error(f"Failed to prepare data for SPSS export: {error_info}")
+            raise Exception(f"Failed to prepare data for SPSS export: {str(e)}") from e
+        
+
+    def validate_spss_export_data(self, df, missing_values):
+        """
+        Validate that data is properly prepared for SPSS export.
+        Ensures no special missing values (like 'a', 'b', 'c') remain in the data.
+        
+        Parameters
+        ----------
+        df : pd.DataFrame
+            The dataframe to validate for SPSS export.
+        missing_values : dict
+            Dictionary of missing values per variable.
+            
+        Returns
+        -------
+        bool
+            True if data is valid for SPSS export, False otherwise.
+        """
+        try:
+            if missing_values:
+                for var, missing_vals in missing_values.items():
+                    if var in df.columns:
+                        # Check if any special missing values remain in the data
+                        for missing_val in missing_vals:
+                            if isinstance(missing_val, str) and missing_val.isalpha():
+                                # Check if this special missing value still exists in the data
+                                if df[var].isin([missing_val]).any():
+                                    logger.warning(f"Special missing value '{missing_val}' still exists in variable '{var}' for SPSS export")
+                                    return False
+            
+            logger.debug("SPSS export data validation passed")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to validate SPSS export data: {str(e)}")
+            return False
+        
+
+    def prepare_value_labels_for_spss_export(self, variable_value_labels):
+        """
+        Prepare value labels for SPSS export by filtering out non-numeric keys.
+        SPSS only supports numeric value labels, so we need to exclude any non-numeric keys.
+        
+        Parameters
+        ----------
+        variable_value_labels : dict
+            Dictionary of variable value labels.
+            
+        Returns
+        -------
+        dict
+            Filtered value labels with only numeric keys.
+        """
+        try:
+            if variable_value_labels is None:
+                logger.debug("variable_value_labels is None, returning None for SPSS export")
+                return None
+            
+            spss_value_labels = {}
+            
+            for var, labels in variable_value_labels.items():
+                spss_value_labels[var] = {}
+                
+                for key, value in labels.items():
+                    # Only include numeric keys for SPSS
+                    if isinstance(key, (int, float)) or (isinstance(key, str) and self.is_string_integer(key)):
+                        # Convert string keys to numeric if needed
+                        if isinstance(key, str):
+                            numeric_key = int(key)
+                        else:
+                            numeric_key = key
+                        
+                        spss_value_labels[var][numeric_key] = value
+                        logger.debug(f"SPSS export: included value label '{key}' -> '{value}' for variable '{var}'")
+                    else:
+                        logger.debug(f"SPSS export: excluded non-numeric value label '{key}' -> '{value}' for variable '{var}'")
+            
+            logger.debug(f"SPSS export: prepared value labels: {spss_value_labels}")
+            return spss_value_labels
+            
+        except Exception as e:
+            error_info = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "traceback": traceback.format_exc(),
+                "function": "prepare_value_labels_for_spss_export",
+                "variable_value_labels": variable_value_labels
+            }
+            logger.error(f"Failed to prepare value labels for SPSS export: {error_info}")
+            raise Exception(f"Failed to prepare value labels for SPSS export: {str(e)}") from e
         
 
 
