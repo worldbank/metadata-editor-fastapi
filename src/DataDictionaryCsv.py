@@ -13,6 +13,10 @@ from src.DataUtils import DataUtils
 from statsmodels.stats.weightstats import DescrStatsW
 from types import SimpleNamespace
 import traceback
+import logging
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 
 class DataDictionaryCsv:
@@ -20,46 +24,62 @@ class DataDictionaryCsv:
 
     def load_file(self, fileinfo:FileInfo, metadataonly=True, usecols=None, dtypes=None):
         """Load a CSV file into a pandas dataframe return dataframe and metadata """
-
-        file_ext=os.path.splitext(fileinfo.file_path)[1]
-        #print( "reading csv file", fileinfo.file_path, "with usecols", usecols, "and dtypes", dtypes)
-
-        if file_ext.lower() == '.csv':
-            encodings_to_try = [None, "utf-8", "latin1", "cp1252", "iso-8859-1", "cp850"]
-            last_error = None
+        try:
+            logger.debug(f"Loading CSV file: {fileinfo.file_path}, usecols: {usecols}, dtypes: {dtypes}")
             
-            for encoding in encodings_to_try:
-                try:
-                    if encoding is None:
-                        df = pd.read_csv(fileinfo.file_path, usecols=usecols, dtype=dtypes)
-                    else:
-                        df = pd.read_csv(fileinfo.file_path, usecols=usecols, dtype=dtypes, encoding=encoding)
-                    
-                    meta = SimpleNamespace()
-                    meta.column_names=df.columns.tolist()
-                    meta.column_names_to_labels=dict()
-                    meta.number_rows=df.shape[0]
-                    meta.number_columns=df.shape[1]
-                    meta.variable_value_labels=dict()
-                    meta.dtypes=df.dtypes.to_dict()
-                    
-                    return df, meta
-                    
-                except UnicodeDecodeError as e:
-                    last_error = e
-                    print(f"Failed to read CSV file with encoding '{encoding}': {str(e)}")
-                    continue
-                except Exception as e:
-                    last_error = e
-                    print(f"Failed to read CSV file with encoding '{encoding}': {str(e)}")
-                    continue
-            
-            if last_error:
-                raise Exception(f"Failed to read CSV file with any encoding. Last error: {str(last_error)}")
+            file_ext=os.path.splitext(fileinfo.file_path)[1]
+
+            if file_ext.lower() == '.csv':
+                encodings_to_try = [None, "utf-8", "latin1", "cp1252", "iso-8859-1", "cp850"]
+                last_error = None
+                
+                for encoding in encodings_to_try:
+                    try:
+                        if encoding is None:
+                            df = pd.read_csv(fileinfo.file_path, usecols=usecols, dtype=dtypes)
+                        else:
+                            df = pd.read_csv(fileinfo.file_path, usecols=usecols, dtype=dtypes, encoding=encoding)
+                        
+                        meta = SimpleNamespace()
+                        meta.column_names=df.columns.tolist()
+                        meta.column_names_to_labels=dict()
+                        meta.number_rows=df.shape[0]
+                        meta.number_columns=df.shape[1]
+                        meta.variable_value_labels=dict()
+                        meta.dtypes=df.dtypes.to_dict()
+                        
+                        logger.debug(f"CSV file loaded successfully with encoding '{encoding}', shape: {df.shape}")
+                        return df, meta
+                        
+                    except UnicodeDecodeError as e:
+                        last_error = e
+                        logger.debug(f"Failed to read CSV file with encoding '{encoding}': {str(e)}")
+                        continue
+                    except Exception as e:
+                        last_error = e
+                        logger.debug(f"Failed to read CSV file with encoding '{encoding}': {str(e)}")
+                        continue
+                
+                if last_error:
+                    raise Exception(f"Failed to read CSV file with any encoding. Last error: {str(last_error)}")
+                else:
+                    raise Exception("Failed to read CSV file with any encoding")
             else:
-                raise Exception("Failed to read CSV file with any encoding")
-        else:
-            return {"error": "file not supported" + file_ext}
+                logger.error(f"File format not supported: {file_ext}")
+                return {"error": "file not supported" + file_ext}
+                
+        except Exception as e:
+            error_info = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "traceback": traceback.format_exc(),
+                "function": "load_file",
+                "file_path": fileinfo.file_path,
+                "usecols": usecols,
+                "dtypes": dtypes
+            }
+            logger.error(f"Failed to load CSV file: {error_info}")
+            raise Exception(f"Failed to load CSV file {fileinfo.file_path}: {str(e)}") from e
             
     
 
@@ -80,8 +100,8 @@ class DataDictionaryCsv:
                 name_labels: dict = {}
                 export_format: str = "csv"
         """
-
         try:
+            logger.debug(f"Starting get_data_dictionary_variable for CSV file: {params}")
             if (len(params.dtypes) == 0):
                 dtypes=None
             else:
@@ -96,11 +116,11 @@ class DataDictionaryCsv:
                     columns.append(str(w.field))
                     columns.append(str(w.weight_field))
 
-            df,meta = self.load_file(params,metadataonly=False,usecols=columns, dtypes=dtypes)
-
+            df,meta = self.load_file(params,metadataonly=False,usecols=columns, dtypes=dtypes)            
 
             # if missings are defined, replace them with pd.NA
             if params.missings:
+                logger.debug(f"Replacing missing values: {params.missings}")
                 df = df.replace(params.missings, np.nan)
 
             # This fillna is redundant since we're already replacing with np.nan
@@ -123,27 +143,28 @@ class DataDictionaryCsv:
                             # If no values became NaN during conversion, all values are numeric
                             if converted.notna().sum() == len(non_null_values):
                                 df[col] = pd.to_numeric(df[col], errors='coerce')
-                    except Exception:
+                    except Exception as e:
                         # If any error occurs, leave column as is
+                        logger.debug(f"Could not convert column {col} to numeric: {str(e)}")
                         pass
 
-            
             # Use pandas' best-guess type inference
             df = df.convert_dtypes()
 
             variables = []
             for name in meta.column_names:
                 user_missings=[]
-                for missing_col, missings in params.missings.items():                
-                    if missing_col == name:
-                        user_missings=missings
-                        break
-                variables.append(self.variable_summary(df,meta,name,user_missings=user_missings))
+                if params.missings:
+                    for missing_col, missings in params.missings.items():                
+                        if missing_col == name:
+                            user_missings=missings
+                            break                
+                variables.append(self.variable_summary(df,meta,name,user_missings=user_missings, categorical_list=params.categorical))
 
             weights = {}
 
-            if len(params.weights) > 0:
-                for weight in params.weights:            
+            if len(params.weights) > 0:                
+                for weight in params.weights:
                     weighted_=self.calc_weighted_mean_n_stddev(df,weight.field, weight.weight_field)
                     weights[weight.field]={
                             'wgt_freq': self.calc_weighted_freq(df,weight.field, weight.weight_field),
@@ -152,19 +173,31 @@ class DataDictionaryCsv:
                         }
                         
             #add weights stats to variables
-            self.apply_weighted_freq_to_variables(variables, weights)
-                
-            
-            return {
+            if weights:
+                self.apply_weighted_freq_to_variables(variables, weights)
+                            
+            result = {
                 'rows':meta.number_rows,
                 'columns':meta.number_columns,
                 'variables':variables,
                 'weights':weights
-                }
+            }
+            return result
 
         except Exception as e:
-            print ("ERROR in get_data_dictionary_variable:", str(e))
-            raise Exception("ERROR in get_data_dictionary_variable: " + str(e))
+            error_info = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "traceback": traceback.format_exc(),
+                "function": "get_data_dictionary_variable",
+                "file_path": params.file_path,
+                "var_names": params.var_names,
+                "weights": params.weights,
+                "missings": params.missings,
+                "dtypes": params.dtypes
+            }
+            logger.error(f"ERROR in get_data_dictionary_variable: {error_info}")
+            raise Exception("ERROR in get_data_dictionary_variable: " + str(e)) from e
 
 
     def apply_weighted_freq_to_variables(self, variables, weights_obj):
@@ -175,9 +208,8 @@ class DataDictionaryCsv:
                 for var_catgry in variable['var_catgry']:
                     #check for is_missing
                     if ('is_missing' in var_catgry):
+                        logger.warning(f"Skipping variable with category is_missing: {var_catgry}")
                         raise Exception("is_missing not supported")
-                        print ("skipping variable with category is_missing ", var_catgry)
-                        continue
                     var_catgry['stats'].append(
                         DataUtils.set_wgt_stats_by_value(weights_obj,field=variable['name'],value=int(var_catgry['value']))
                     )
@@ -266,7 +298,7 @@ class DataDictionaryCsv:
         
         if (len(user_missings) > 0):
             # Use proper pandas method to avoid FutureWarning
-            df[variable_name] = df[variable_name].replace(user_missings, np.nan)            
+            df[variable_name] = df[variable_name].replace(user_missings, np.nan)
                 
         summary_stats=df[variable_name].describe(percentiles=None)
 
@@ -275,9 +307,7 @@ class DataDictionaryCsv:
                 "UNITS": "REAL",
                 "count": int(summary_stats.get('count',0)),
                 "min": str(summary_stats.get('min')),
-                "max": str(summary_stats.get('max')),
-                #"mean": str(summary_stats.get('mean','')),
-                #"stdev": str(summary_stats.get('std',''))
+                "max": str(summary_stats.get('max'))
             }
         }
 
@@ -299,6 +329,7 @@ class DataDictionaryCsv:
             user_missings=self.list_get_numeric_values(user_missings)
             # Use proper pandas method to avoid FutureWarning
             df[variable_name] = df[variable_name].replace(user_missings, np.nan)
+            logger.debug(f"Applied user missing values to variable {variable_name}: {user_missings}")
 
         summary_stats=df[variable_name].describe(percentiles=None)
 
@@ -306,7 +337,9 @@ class DataDictionaryCsv:
         sum_=df[variable_name].isna().sum()
 
         # Check if column is numeric to determine which stats to include
-        if is_numeric_dtype(df[variable_name]):
+        is_numeric = is_numeric_dtype(df[variable_name])
+        
+        if is_numeric:
             # For numeric columns, include all statistics
             return [
                 {
@@ -401,14 +434,18 @@ class DataDictionaryCsv:
 
 
 
-    def variable_categories_calculated(self, df,meta,variable_name, max_freq=100, user_missings=list()):
+    def variable_categories_calculated(self, df,meta,variable_name, max_freq=100, user_missings=list(), categorical_list=list()):
         is_categorical=False
         categories=[]
         categories_calc=[]
         numeric_columns=df.select_dtypes('int').columns
 
-        if (variable_name not in numeric_columns):
-            #print ("variable not numeric, not categorical ", variable_name)
+        # Check if variable is explicitly set as categorical by user
+        is_user_categorical = variable_name in categorical_list
+
+        # Skip processing if not numeric and not user-defined categorical
+        if not is_user_categorical and variable_name not in numeric_columns:
+            logger.debug(f"Variable {variable_name} not numeric and not user-defined categorical, skipping categorical calculation")
             return []
 
         #get value counts [freq] by each unique value
@@ -418,19 +455,30 @@ class DataDictionaryCsv:
         if (variable_name in meta.variable_value_labels):
             is_categorical=True    
             categories=meta.variable_value_labels[variable_name]
+            logger.debug(f"Variable {variable_name} has value labels, treating as categorical")
+        elif is_user_categorical:
+            # User-defined categorical variable - check if within reasonable limit
+            if (categories_calc.count() > 1000):
+                logger.warning(f"User-defined categorical variable {variable_name} has too many categories ({categories_calc.count()}), limiting to 1000")
+                # Still process but limit the categories to top 1000 by frequency
+                categories_calc = categories_calc.head(1000)
+            is_categorical=True
+            logger.debug(f"Variable {variable_name} is user-defined categorical with {categories_calc.count()} categories")
         else:
             #guess if variable is categorical
             #too many categories
             if (categories_calc.count() > max_freq):
                 #not a categorical variable
+                logger.debug(f"Variable {variable_name} has too many categories ({categories_calc.count()}), not categorical")
                 return []
 
-            # check value data type for non-integer values
+            # check value data type for non-integer values (only for non-user-defined categorical)
             for cat,freq in categories_calc.items():
                 if (cat==''):
                     continue
                 
                 if (cat!=int(cat)):
+                    logger.debug(f"Variable {variable_name} has non-integer values, not categorical")
                     return []
 
         output=[]
@@ -460,18 +508,13 @@ class DataDictionaryCsv:
 
             output.append(catgry)
 
-        #if labels are available add them    
-        #if (categories):
-        #    for catgry in output:
-        #        catgry['labl']=categories.get(int(catgry['value']),'')
-
         return output
 
 
-    def variable_summary(self, df,meta,variable_name, user_missings=list()):
+    def variable_summary(self, df,meta,variable_name, user_missings=list(), categorical_list=list()):
         """Return a dictionary of summary statistics for a variable in a dataframe"""
 
-        variable_categories=self.variable_categories_calculated(df,meta,variable_name, user_missings=user_missings)
+        variable_categories=self.variable_categories_calculated(df,meta,variable_name, user_missings=user_missings, categorical_list=categorical_list)
         variable_has_categories=False
 
         if (variable_categories):
@@ -484,7 +527,6 @@ class DataDictionaryCsv:
             #"var_dcml": self.variable_decimal_percision(meta,variable_name),
             "var_intrvl": self.variable_measure(df, meta,variable_name,variable_has_categories),
             #"loc_width": meta.variable_display_width[variable_name],
-            #TODO
             #"var_invalrng": {
             #    "values": [
             #    "9",
@@ -556,10 +598,11 @@ class DataDictionaryCsv:
         Returns:
         --------
         bool : True if column should be treated as categorical
-        """
+        """        
         
         # 1. Check if explicitly defined as categorical in metadata
         if variable_name in meta.variable_value_labels:
+            logger.debug(f"Variable {variable_name} has value labels, treating as categorical")
             return True
             
         # 2. Get basic column info

@@ -128,17 +128,12 @@ class ExportDatafile:
 
             logger.debug(f"Loading file: {params.file_path}")
             df,meta = self.load_file(params,usecols=columns, dtypes=dtypes)
-            logger.debug(f"File loaded successfully, shape: {df.shape}")
-            
-            logger.debug(f"Parsing value labels: {variable_value_labels}")
-            variable_value_labels=self.parse_value_labels(variable_value_labels)
+            variable_value_labels=self.parse_value_labels(variable_value_labels, params.export_format)
 
             # get all single character value labels that are not numeric and add them to missing_value_labels
             # this is to handle user-defined missing values in Stata and SPSS
             # e.g. .a, .b, .c etc.        
-            logger.debug(f"Combining missing values with value labels. missings: {params.missings}, value_labels: {variable_value_labels}")
             params.missings=self.combine_missing_values_with_value_labels(variable_value_labels, params.missings)
-            logger.debug(f"Combined missing values: {params.missings}")
 
             # Note: for exporting to STATA, SPSS
             #
@@ -146,32 +141,41 @@ class ExportDatafile:
             # and all numeric values e.g. 1, 2, 3 are stored as string such as '1', '2', '3'
             # To properly handle this, we need to convert these columns to numeric while preserving the user-defined missing values
             # otherwise, the numeric values will be treated as strings and stata or SPSS export will not recognize them as numeric.
+            # 
+            # For SPSS: Skip conversion of object/string columns as SPSS supports string data types
 
             # For columns with user missings (e.g. .a, .b etc. in Stata)
             # try to convert to numeric
-            for col in df.columns:
-                # only apply to columns in params.missings
-                if params.missings and col in params.missings:
-                    logger.debug(f"Converting mixed column to numeric: {col}")
-                    #convert mixed columns to numeric
-                    df[col] = self.convert_mixed_column(df[col])
-                    continue
-                
-                if df[col].dtype == 'object' or pd.api.types.is_string_dtype(df[col]):
-                    # test if column can be converted to numeric
-                    try:
-                        # Check if all non-null values can be converted to numeric
-                        non_null_values = df[col].dropna()
-                        if len(non_null_values) > 0:
-                            # Try to convert to numeric
-                            pd.to_numeric(non_null_values, errors='raise')
-                            # If successful, convert the entire column
-                            df[col] = pd.to_numeric(df[col], errors='coerce')
-                            logger.debug(f"Converted column {col} to numeric")
-                    except (ValueError, TypeError):
-                        # Column cannot be converted to numeric, keep as is
-                        logger.debug(f"Column {col} cannot be converted to numeric, keeping as is")
-                        pass
+            if params.export_format not in ['csv']:
+                for col in df.columns:
+                    # only apply to columns in params.missings
+                    if params.missings and col in params.missings:
+                        logger.debug(f"Converting mixed column to numeric: {col}")
+                        #convert mixed columns to numeric
+                        df[col] = self.convert_mixed_column(df[col])
+                        continue
+                    
+                    # For SPSS export, skip conversion of object/string columns to preserve string data types
+                    if params.export_format in ['spss', 'sav']:
+                        if df[col].dtype == 'object' or pd.api.types.is_string_dtype(df[col]):
+                            logger.debug(f"SPSS export: preserving string data type for column {col}")
+                            continue
+                    
+                    if df[col].dtype == 'object' or pd.api.types.is_string_dtype(df[col]):
+                        # test if column can be converted to numeric
+                        try:
+                            # Check if all non-null values can be converted to numeric
+                            non_null_values = df[col].dropna()
+                            if len(non_null_values) > 0:
+                                # Try to convert to numeric
+                                pd.to_numeric(non_null_values, errors='raise')
+                                # If successful, convert the entire column
+                                df[col] = pd.to_numeric(df[col], errors='coerce')
+                                logger.debug(f"Converted column {col} to numeric")
+                        except (ValueError, TypeError):
+                            # Column cannot be converted to numeric, keep as is
+                            logger.debug(f"Column {col} cannot be converted to numeric, keeping as is")
+                            pass
 
             file_formats = {
                 'csv': "csv",
@@ -212,8 +216,8 @@ class ExportDatafile:
                 if not self.validate_spss_export_data(df_for_spss, params.missings):
                     logger.warning("Special missing values detected in data prepared for SPSS export - this may cause issues")
                 
-                # Prepare value labels for SPSS export (only numeric keys allowed)
-                spss_value_labels = self.prepare_value_labels_for_spss_export(variable_value_labels)
+                # Prepare value labels for SPSS export (numeric keys for numeric columns, all keys for string columns)
+                spss_value_labels = self.prepare_value_labels_for_spss_export(variable_value_labels, df_for_spss)
                 
                 pyreadstat.write_sav(df_for_spss, output_file_path, missing_ranges=spss_missing_ranges, variable_value_labels=spss_value_labels, column_labels=params.name_labels)
             elif params.export_format == 'json':
@@ -350,11 +354,11 @@ class ExportDatafile:
             raise Exception(f"Failed to combine missing values with value labels: {str(e)}") from e
 
 
-    def parse_value_labels(self, value_labels):
-        """convert values to numeric values"""
+    def parse_value_labels(self, value_labels, export_format=None):
+        """convert values to numeric values, except for SPSS string columns"""
         try:
             # Debug logging (only shown when LOG_LEVEL=DEBUG)
-            logger.debug(f"Parsing value labels: {value_labels}")
+            logger.debug(f"Parsing value labels: {value_labels}, export_format: {export_format}")
             
             output=dict()
 
@@ -366,13 +370,19 @@ class ExportDatafile:
                 logger.debug(f"Processing variable: {key}, labels: {value}")
                 output[key]=dict()
                 for k,v in value.items():                
-                    if self.is_string_integer(k):
-                        k=int(k)
-                        logger.debug(f"Converted string key '{k}' to int for variable {key}")
-                    #else:
-                    #    raise ValueError(f"Categorical variable [{key}] has non-numeric category code [{k}]. Only numeric codes are supported.")
-                    
-                    output[key][k]=v
+                    # For SPSS export, preserve string keys as-is (they will be filtered later based on column type)
+                    if export_format in ['spss', 'sav']:
+                        output[key][k]=v
+                        logger.debug(f"SPSS export: preserving key '{k}' as-is for variable {key}")
+                    else:
+                        # For other formats, convert string integers to numeric
+                        if self.is_string_integer(k):
+                            k=int(k)
+                            logger.debug(f"Converted string key '{k}' to int for variable {key}")
+                        #else:
+                        #    raise ValueError(f"Categorical variable [{key}] has non-numeric category code [{k}]. Only numeric codes are supported.")
+                        
+                        output[key][k]=v
 
             logger.debug(f"Value labels parsed successfully: {output}")
             return output
@@ -496,20 +506,23 @@ class ExportDatafile:
             return False
         
 
-    def prepare_value_labels_for_spss_export(self, variable_value_labels):
+    def prepare_value_labels_for_spss_export(self, variable_value_labels, df):
         """
-        Prepare value labels for SPSS export by filtering out non-numeric keys.
-        SPSS only supports numeric value labels, so we need to exclude any non-numeric keys.
+        Prepare value labels for SPSS export.
+        For numeric columns, only numeric keys are supported.
+        For string/object columns, both numeric and string keys are supported.
         
         Parameters
         ----------
         variable_value_labels : dict
             Dictionary of variable value labels.
+        df : pd.DataFrame
+            The dataframe to determine column data types.
             
         Returns
         -------
         dict
-            Filtered value labels with only numeric keys.
+            Filtered value labels appropriate for each column's data type.
         """
         try:
             if variable_value_labels is None:
@@ -521,21 +534,31 @@ class ExportDatafile:
             for var, labels in variable_value_labels.items():
                 spss_value_labels[var] = {}
                 
+                # Check if the column exists in the dataframe
+                if var not in df.columns:
+                    logger.debug(f"SPSS export: variable '{var}' not found in dataframe, skipping value labels")
+                    continue
+                
+                # Determine if this is a string/object column
+                is_string_column = (df[var].dtype == 'object' or pd.api.types.is_string_dtype(df[var]))
+                
                 for key, value in labels.items():
-                    # Only include numeric keys for SPSS
-                    if isinstance(key, (int, float)) or (isinstance(key, str) and self.is_string_integer(key)):
-                        # Convert string keys to numeric if needed
-                        if isinstance(key, str):
-                            numeric_key = int(key)
-                        else:
-                            numeric_key = key
-                        
-                        spss_value_labels[var][numeric_key] = value
-                        logger.debug(f"SPSS export: included value label '{key}' -> '{value}' for variable '{var}'")
+                    if is_string_column:
+                        # For string/object columns, keep all value labels as-is (both numeric and string keys)
+                        spss_value_labels[var][key] = value
                     else:
-                        logger.debug(f"SPSS export: excluded non-numeric value label '{key}' -> '{value}' for variable '{var}'")
+                        # For numeric columns, only include numeric keys
+                        if isinstance(key, (int, float)) or (isinstance(key, str) and self.is_string_integer(key)):
+                            # Convert string keys to numeric if needed
+                            if isinstance(key, str):
+                                numeric_key = int(key)
+                            else:
+                                numeric_key = key
+                            
+                            spss_value_labels[var][numeric_key] = value                            
+                        else:
+                            logger.debug(f"SPSS export: excluded non-numeric value label '{key}' -> '{value}' for numeric variable '{var}'")
             
-            logger.debug(f"SPSS export: prepared value labels: {spss_value_labels}")
             return spss_value_labels
             
         except Exception as e:

@@ -4,12 +4,15 @@ import pandas as pd
 from pydantic import BaseModel
 import os
 import pyreadstat
+import logging
 from src.FileInfo import FileInfo
 from src.VarInfo import VarInfo
 from src.DictParams import DictParams
 from src.DataUtils import DataUtils
 from statsmodels.stats.weightstats import DescrStatsW
 from fastapi.exceptions import HTTPException
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -59,13 +62,11 @@ class DataDictionary:
                     
                 except (pyreadstat.ReadstatError, UnicodeDecodeError, UnicodeError, ValueError) as e:
                     last_error = e
-                    print(f"Failed to read DTA file with encoding '{encoding}': {str(e)}")
                     continue  # Try next encoding
                 
             # If all encodings failed, raise the last error
             if df is None or meta is None:
                 # Second attempt: try all encodings again with user_missing=False
-                print("Trying all encodings again with user_missing=False...")
                 
                 for encoding in encodings_to_try:
                     try:
@@ -88,11 +89,11 @@ class DataDictionary:
                         
                     except (pyreadstat.ReadstatError, UnicodeDecodeError, UnicodeError, ValueError) as e:
                         last_error = e
-                        print(f"Failed to read DTA file with encoding '{encoding}' (user_missing=False): {str(e)}")
                         continue  # Try next encoding
                 
                 # If still failed after trying all encodings with and without user_missing 
                 if df is None or meta is None:
+                    logger.error(f"Failed to read DTA file. Last error: {str(last_error)}")
                     raise HTTPException(400, detail=f"Failed to read DTA file. Last error: {str(last_error)}")
 
         elif file_ext.lower() == '.sav':
@@ -134,7 +135,6 @@ class DataDictionary:
                     
                 except (pyreadstat.ReadstatError, UnicodeDecodeError, UnicodeError, ValueError) as e:
                     last_error = e
-                    print(f"Failed to read SAV file with encoding '{encoding}': {str(e)}")
                     continue  # Try next encoding
             
             # If all encodings failed, raise the last error
@@ -149,7 +149,6 @@ class DataDictionary:
                                 metadataonly=metadataonly,
                                 usecols=usecols
                             )
-                            print("Read SAV file without encoding (user_missing=False)")
                         else:
                             df, meta = pyreadstat.read_sav(
                                 fileinfo.file_path, 
@@ -158,18 +157,17 @@ class DataDictionary:
                                 usecols=usecols,
                                 encoding=encoding
                             )
-                            print(f"Read SAV file with encoding '{encoding}' (user_missing=False)")
                         break  # Success, exit the loop
                         
                     except (pyreadstat.ReadstatError, UnicodeDecodeError, UnicodeError, ValueError) as e:
                         last_error = e
-                        print(f"Failed to read SAV file with encoding '{encoding}' (user_missing=False): {str(e)}")
                         continue  # Try next encoding
                 
                 # If still failed after second attempt
                 if df is None or meta is None:
                     raise HTTPException(400, detail=f"Failed to read SAV file with any encoding (tried both user_missing=True and user_missing=False). Last error: {str(last_error)}")
         else:
+            logger.error(f"File not supported: {file_ext}")
             raise HTTPException(400, detail="file not supported: " + file_ext)
         
         return df,meta
@@ -240,7 +238,7 @@ class DataDictionary:
                 df[col] = df[col].astype('Float64')
                 df[col] = df[col].astype('Int64')
             except ValueError as e:
-                print("failed to convert column to numeric" + str(e) )
+                logger.warning(f"Failed to convert column to numeric: {str(e)}")
 
         
 
@@ -273,20 +271,26 @@ class DataDictionary:
                     columns.append(str(w.field))
                     columns.append(str(w.weight_field))
 
-            #print ("columns: ",columns)
             df,meta = self.load_file(params,metadataonly=False,usecols=columns)
 
-            #get user missing values from meta
-            #if meta.missing_user_values is not None:
-            #    params.missings = meta.missing_user_values
 
-            #    df.replace(params.missings, np.nan, inplace=True)
+            #get user missing values from meta
+            # If params.missings is empty, get missing values from metadata
+            if not params.missings or len(params.missings) == 0:
+                if hasattr(meta, 'missing_user_values') and meta.missing_user_values is not None:
+                    params.missings = meta.missing_user_values
+                else:
+                    params.missings = {}
+            
+            # Replace missing values with NaN if any are defined
+            if params.missings:
+                df.replace(params.missings, np.nan, inplace=True)
             
             # for columns with user missings (e.g. .a, .b etc. in Stata)
             # try to convert to numeric
             for col in df.columns:
                 # only apply to columns in params.missings
-                if col not in params.missings:
+                if not params.missings or col not in params.missings:
                     continue
                 
                 if df[col].dtype == 'object' or pd.api.types.is_string_dtype(df[col]):
@@ -316,12 +320,14 @@ class DataDictionary:
             try:
                 for name in meta.column_names:
                     user_missings=[]
-                    for missing_col, missings in params.missings.items():                
-                            if missing_col == name:
-                                user_missings=missings
-                                break
+                    if params.missings:
+                        for missing_col, missings in params.missings.items():                
+                                if missing_col == name:
+                                    user_missings=missings
+                                    break
                     variables.append(self.variable_summary(df,meta,name,user_missings=user_missings))
             except Exception as e:
+                logger.error(f"Failed to process variables: {str(e)}")
                 raise HTTPException(500, detail=f"Failed to process variables: {str(e)}")
 
             weights = {}
@@ -342,7 +348,6 @@ class DataDictionary:
                                 'wgt_stdev': weighted_['stdev']
                             }
 
-                    print("weights: ",weights)           
                     #add weights stats to variables
                     self.apply_weighted_freq_to_variables(variables, weights)
                 except Exception as e:
@@ -463,18 +468,27 @@ class DataDictionary:
 
         summary_stats=df[variable_name].describe(percentiles=None)
 
-        #summary_stats=df[variable_name].describe(percentiles=None)
-
-        return {
-            "range": {
-                "UNITS": "REAL",
-                "count": int(summary_stats.get('count',0)),
-                "min": str(summary_stats.get('min')),
-                "max": str(summary_stats.get('max')),
-                #"mean": str(summary_stats.get('mean','')),
-                #"stdev": str(summary_stats.get('std',''))
+        # Check if the column is numeric
+        is_numeric_column = pd.api.types.is_numeric_dtype(df[variable_name])
+        
+        if is_numeric_column:
+            # For numeric columns, return count, min, and max
+            return {
+                "range": {
+                    "UNITS": "REAL",
+                    "count": int(summary_stats.get('count',0)),
+                    "min": str(summary_stats.get('min')),
+                    "max": str(summary_stats.get('max'))
+                }
             }
-        }
+        else:
+            # For non-numeric columns, return only count
+            return {
+                "range": {
+                    "UNITS": "REAL",
+                    "count": int(summary_stats.get('count',0))
+                }
+            }
     
 
     def list_get_numeric_values(self, values):
@@ -501,33 +515,49 @@ class DataDictionary:
         count_=df[variable_name].count()
         sum_=df[variable_name].isna().sum()
 
-
-        return [
-                {
-                    "type": "vald",
-                    "value": str(count_)
-                },
-                {
-                    "type": "invd",
-                    "value": str(sum_)
-                },
-                {
-                    "type":"min",
-                    "value": str(summary_stats.get('min'))
-                },
-                {
-                    "type":"max",
-                    "value": str(summary_stats.get('max'))
-                },
-                {
-                    "type": "mean",
-                    "value": str(summary_stats.get('mean'))
-                },
-                {
-                    "type": "stdev",
-                    "value": str(summary_stats.get('std'))
-                }
-            ]
+        # Check if the column is numeric
+        is_numeric_column = pd.api.types.is_numeric_dtype(df[variable_name])
+        
+        if is_numeric_column:
+            # For numeric columns, return all statistics
+            return [
+                    {
+                        "type": "vald",
+                        "value": str(count_)
+                    },
+                    {
+                        "type": "invd",
+                        "value": str(sum_)
+                    },
+                    {
+                        "type":"min",
+                        "value": str(summary_stats.get('min'))
+                    },
+                    {
+                        "type":"max",
+                        "value": str(summary_stats.get('max'))
+                    },
+                    {
+                        "type": "mean",
+                        "value": str(summary_stats.get('mean'))
+                    },
+                    {
+                        "type": "stdev",
+                        "value": str(summary_stats.get('std'))
+                    }
+                ]
+        else:
+            # For non-numeric columns, return only vald and invd
+            return [
+                    {
+                        "type": "vald",
+                        "value": str(count_)
+                    },
+                    {
+                        "type": "invd",
+                        "value": str(sum_)
+                    }
+                ]
 
     def variable_format(self, meta,variable_name):
 
@@ -610,20 +640,29 @@ class DataDictionary:
         is_categorical=False
         categories=[]
         categories_calc=[]
-        numeric_columns=df.select_dtypes('int').columns
-
-        if (variable_name not in numeric_columns):
-            #print ("variable not numeric", variable_name)
+        
+        # Ensure user_missings is a list
+        if not user_missings:
+            user_missings = []
+        
+        # Check if variable exists in dataframe
+        if variable_name not in df.columns:
             return []
 
         #get value counts [freq] by each unique value
         categories_calc=df[variable_name].value_counts()
 
-        #check if meta field has value labels
+        #check if meta field has value labels - if so, treat as categorical regardless of data type
         if (variable_name in meta.variable_value_labels):
             is_categorical=True    
             categories=meta.variable_value_labels[variable_name]
         else:
+            # Only check numeric columns if no value labels exist
+            numeric_columns=df.select_dtypes(include=['int']).columns
+            
+            if (variable_name not in numeric_columns):
+                return []
+
             #guess if variable is categorical
             #too many categories
             if (categories_calc.count() > max_freq):
@@ -666,9 +705,21 @@ class DataDictionary:
             output.append(catgry)
 
         #if labels are available add them    
-        #if (categories):
-        #    for catgry in output:
-        #        catgry['labl']=categories.get(int(catgry['value']),'')
+        if (categories):
+            # Check if the column is numeric to determine how to look up labels
+            is_numeric_column = pd.api.types.is_numeric_dtype(df[variable_name])
+            
+            for catgry in output:
+                if is_numeric_column:
+                    try:
+                        # For numeric columns, try to convert value to int first
+                        catgry['labl']=categories.get(int(catgry['value']),'')
+                    except (ValueError, TypeError):
+                        # If conversion fails, use the value as-is
+                        catgry['labl']=categories.get(catgry['value'],'')
+                else:
+                    # For non-numeric columns, use the value as-is
+                    catgry['labl']=categories.get(catgry['value'],'')
 
 
         return output
@@ -693,7 +744,6 @@ class DataDictionary:
             "var_invalrng":{
                 "values": self.variable_missing_values(meta,variable_name)
             },
-            #TODO
             #"var_invalrng": {
             #    "values": [
             #    "9",

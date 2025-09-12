@@ -13,4 +13,5 @@ class DictParams(BaseModel):
     dtypes: Dict[str, Any] = {}
     value_labels: Dict[str, Any] = {}
     name_labels: Dict[str, Any] = {}
+    categorical: List[str] = []
     export_format: str = "csv"

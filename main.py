@@ -104,12 +104,11 @@ def setup_logging():
     
     return logging.getLogger(__name__)
 
-# Setup logging with configuration
-logger = setup_logging()
-
-
 # Load environment variables from the .env file
 load_dotenv(override=True)
+
+# Setup logging with configuration (after loading environment variables)
+logger = setup_logging()
 
 # Cleanup configuration
 # run cleanup task to remove old jobs
