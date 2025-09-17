@@ -9,6 +9,7 @@ from src.DataUtils import DataUtils
 from src.DataDictionary import DataDictionary
 from src.DataDictionaryCsv import DataDictionaryCsv
 from src.ExportDatafile import ExportDatafile
+from src.version import get_version
 import re
 import pandas as pd
 import numpy as np
@@ -186,11 +187,19 @@ async def custom_http_exception_handler(request, exc):
 
 @app.get("/")
 async def root(request: Request):
-    return {"message": "PyDataTool API - See documentation at " + str(request.url) + "docs"}
+    return {
+        "message": "PyDataTool API - See documentation at " + str(request.url) + "docs",
+        "version": get_version()
+    }
 
 @app.get("/status")
 async def status():
     return {"status": "ok"}
+
+@app.get("/version")
+async def version():
+    """Get application version."""
+    return {"version": get_version()}
 
 
 @app.post("/metadata")
