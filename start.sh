@@ -5,6 +5,43 @@
 
 set -e  # Exit on any error
 
+# Function to show help
+show_help() {
+    echo "Metadata Editor FastAPI - Start Script"
+    echo ""
+    echo "Usage: $0 [options]"
+    echo ""
+    echo "Options:"
+    echo "  --help, -h              Show this help message"
+    echo "  --check                 Only run checks without starting the application"
+    echo "  --python-version VER   Use specific Python version (e.g., 3.13, 3.12)"
+    echo ""
+    echo "Environment variables:"
+    echo "  HOST          Server host (default: 0.0.0.0)"
+    echo "  PORT          Server port (default: 8000)"
+    echo "  PYTHON_VERSION Specific Python version to use (e.g., 3.13, 3.12)"
+    echo "  STORAGE_PATH  Path to data storage directory"
+    echo ""
+    echo "Python Environment Detection:"
+    echo "  The script will automatically detect and use:"
+    echo "  1. Virtual environment (.venv/) if available"
+    echo "  2. Specific Python version if --python-version is specified"
+    echo "  3. Specific Python version if PYTHON_VERSION environment variable is set"
+    echo "  4. Available system Python versions (3.13, 3.12, 3.11, etc.)"
+    echo "  5. System uvicorn command directly"
+    echo ""
+    echo "Examples:"
+    echo "  $0                                    # Start with default settings"
+    echo "  HOST=127.0.0.1 $0                    # Start on localhost only"
+    echo "  PORT=8000 $0                         # Start on port 8000"
+    echo "  $0 --python-version 3.13             # Use Python 3.13 specifically"
+    echo "  PYTHON_VERSION=3.13 $0               # Use Python 3.13 via environment"
+    echo ""
+    echo "Quick Commands:"
+    echo "  $0 --check                           # Run checks only"
+    echo "  $0 --help                            # Show this help"
+}
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -20,6 +57,9 @@ PID_FILE="$PROJECT_DIR/logs/app.pid"
 LOG_FILE="$PROJECT_DIR/logs/app.log"
 DEFAULT_HOST="0.0.0.0"
 DEFAULT_PORT="8000"
+
+# Python version configuration
+PYTHON_VERSION="${PYTHON_VERSION:-}"  # Allow override via environment variable
 
 # Detect Python executable
 PYTHON_EXEC=""
@@ -94,6 +134,52 @@ check_venv_directory() {
     return 0
 }
 
+# Function to find available Python versions
+find_python_versions() {
+    local versions=()
+    
+    # Check for specific version if requested
+    if [ -n "$PYTHON_VERSION" ]; then
+        # Try different formats for the requested version
+        local found_version=""
+        for format in "python$PYTHON_VERSION" "python3.$PYTHON_VERSION" "python$PYTHON_VERSION"; do
+            if command -v "$format" > /dev/null 2>&1; then
+                found_version="$format"
+                break
+            fi
+        done
+        
+        if [ -n "$found_version" ]; then
+            versions+=("$found_version")
+            print_status "Found requested Python version: $found_version"
+        else
+            print_warning "Requested Python version $PYTHON_VERSION not found" >&2
+            print_warning "Available formats checked: python$PYTHON_VERSION, python3.$PYTHON_VERSION" >&2
+        fi
+    fi
+    
+    # Find all available Python versions
+    for version in python3.13 python3.12 python3.11 python3.10 python3.9 python3.8 python3 python; do
+        if command -v "$version" > /dev/null 2>&1; then
+            # Avoid duplicates
+            if [[ ! " ${versions[@]} " =~ " ${version} " ]]; then
+                versions+=("$version")
+            fi
+        fi
+    done
+    
+    echo "${versions[@]}"
+}
+
+# Function to test Python executable with uvicorn
+test_python_executable() {
+    local python_cmd="$1"
+    if $python_cmd -c "import uvicorn" 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
 # Function to detect Python and uvicorn executables
 detect_python_executables() {
     # Check virtual environment directory first
@@ -104,27 +190,34 @@ detect_python_executables() {
         return 0
     fi
     
-    # Try system Python with uvicorn installed
-    if command -v python3 > /dev/null 2>&1; then
-        if python3 -c "import uvicorn" 2>/dev/null; then
-            PYTHON_EXEC="python3"
-            UVICORN_EXEC="python3 -m uvicorn"
-            print_success "Using system Python3: $PYTHON_EXEC"
-            return 0
-        fi
+    # Get available Python versions
+    local python_versions=($(find_python_versions))
+    
+    if [ ${#python_versions[@]} -eq 0 ]; then
+        print_error "No Python executables found"
+        return 1
     fi
     
-    # Try system python
-    if command -v python > /dev/null 2>&1; then
-        if python -c "import uvicorn" 2>/dev/null; then
-            PYTHON_EXEC="python"
-            UVICORN_EXEC="python -m uvicorn"
+    print_status "Found Python versions: ${python_versions[*]}"
+    
+    # Try each Python version
+    for python_cmd in "${python_versions[@]}"; do
+        print_status "Testing $python_cmd..."
+        if test_python_executable "$python_cmd"; then
+            PYTHON_EXEC="$python_cmd"
+            UVICORN_EXEC="$python_cmd -m uvicorn"
             print_success "Using system Python: $PYTHON_EXEC"
+            
+            # Show Python version info
+            local version_info=$($python_cmd --version 2>&1)
+            print_status "Python version: $version_info"
             return 0
+        else
+            print_warning "$python_cmd found but uvicorn not available"
         fi
-    fi
+    done
     
-    # Try uvicorn directly
+    # Try uvicorn directly as last resort
     if command -v uvicorn > /dev/null 2>&1; then
         PYTHON_EXEC="python3"  # fallback
         UVICORN_EXEC="uvicorn"
@@ -208,6 +301,7 @@ start_app() {
     print_status "Configuration:"
     print_status "  Host: $host"
     print_status "  Port: $port"
+    print_status "  Python: $PYTHON_EXEC"
     print_status "  Log file: $LOG_FILE"
     
     # Start the application in the background
@@ -248,6 +342,38 @@ start_app() {
     fi
 }
 
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --python-version)
+            PYTHON_VERSION="$2"
+            shift 2
+            ;;
+        --python-version=*)
+            PYTHON_VERSION="${1#*=}"
+            shift
+            ;;
+        --help|-h)
+            show_help
+            exit 0
+            ;;
+        --check)
+            print_status "=== Running checks only ==="
+            create_directories
+            detect_python_executables
+            check_dependencies
+            check_env_config
+            print_success "All checks passed!"
+            exit 0
+            ;;
+        *)
+            print_error "Unknown option: $1"
+            print_error "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+done
+
 # Main execution
 main() {
     print_status "=== Metadata Editor FastAPI - Start Script ==="
@@ -273,50 +399,18 @@ main() {
     print_success "=== Application startup completed ==="
 }
 
-# Handle script arguments
-case "${1:-}" in
-    --help|-h)
-        echo "Metadata Editor FastAPI - Start Script"
-        echo ""
-        echo "Usage: $0 [options]"
-        echo ""
-        echo "Options:"
-        echo "  --help, -h    Show this help message"
-        echo "  --check       Only run checks without starting the application"
-        echo ""
-        echo "Environment variables:"
-        echo "  HOST          Server host (default: 0.0.0.0)"
-        echo "  PORT          Server port (default: 8000)"
-        echo "  STORAGE_PATH  Path to data storage directory"
-        echo ""
-        echo "Python Environment Detection:"
-        echo "  The script will automatically detect and use:"
-        echo "  1. Virtual environment (.venv/) if available"
-        echo "  2. System Python3 with uvicorn installed"
-        echo "  3. System Python with uvicorn installed"
-        echo "  4. System uvicorn command directly"
-        echo ""
-        echo "Examples:"
-        echo "  $0                    # Start with default settings"
-        echo "  HOST=127.0.0.1 $0    # Start on localhost only"
-        echo "  PORT=9000 $0         # Start on port 9000"
-        exit 0
-        ;;
-    --check)
-        print_status "=== Running checks only ==="
-        create_directories
-        detect_python_executables
-        check_dependencies
-        check_env_config
-        print_success "All checks passed!"
-        exit 0
-        ;;
-    "")
-        main
-        ;;
-    *)
-        print_error "Unknown option: $1"
-        print_error "Use --help for usage information"
-        exit 1
-        ;;
-esac
+# If we get here, no special options were processed
+# Check if any arguments were provided
+if [ $# -eq 0 ]; then
+    # No arguments provided, show help
+    show_help
+    echo ""
+    echo "Starting application with default settings..."
+    echo ""
+    main
+else
+    # Arguments were provided but not recognized
+    print_error "Unknown option: $1"
+    print_error "Use --help for usage information"
+    exit 1
+fi
