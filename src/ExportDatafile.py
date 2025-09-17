@@ -149,11 +149,11 @@ class ExportDatafile:
             if params.export_format not in ['csv']:
                 for col in df.columns:
                     # only apply to columns in params.missings
-                    if params.missings and col in params.missings:
-                        logger.debug(f"Converting mixed column to numeric: {col}")
-                        #convert mixed columns to numeric
-                        df[col] = self.convert_mixed_column(df[col])
-                        continue
+                    #if params.missings and col in params.missings:
+                    #    logger.debug(f"Converting mixed column to numeric: {col}")
+                    #    #convert mixed columns to numeric
+                    #    df[col] = self.convert_mixed_column(df[col])
+                    #    continue
                     
                     # For SPSS export, skip conversion of object/string columns to preserve string data types
                     if params.export_format in ['spss', 'sav']:
@@ -161,21 +161,21 @@ class ExportDatafile:
                             logger.debug(f"SPSS export: preserving string data type for column {col}")
                             continue
                     
-                    if df[col].dtype == 'object' or pd.api.types.is_string_dtype(df[col]):
-                        # test if column can be converted to numeric
-                        try:
-                            # Check if all non-null values can be converted to numeric
-                            non_null_values = df[col].dropna()
-                            if len(non_null_values) > 0:
-                                # Try to convert to numeric
-                                pd.to_numeric(non_null_values, errors='raise')
-                                # If successful, convert the entire column
-                                df[col] = pd.to_numeric(df[col], errors='coerce')
-                                logger.debug(f"Converted column {col} to numeric")
-                        except (ValueError, TypeError):
-                            # Column cannot be converted to numeric, keep as is
-                            logger.debug(f"Column {col} cannot be converted to numeric, keeping as is")
-                            pass
+                    # if df[col].dtype == 'object' or pd.api.types.is_string_dtype(df[col]):
+                    #     # test if column can be converted to numeric
+                    #     try:
+                    #         # Check if all non-null values can be converted to numeric
+                    #         non_null_values = df[col].dropna()
+                    #         if len(non_null_values) > 0:
+                    #             # Try to convert to numeric
+                    #             pd.to_numeric(non_null_values, errors='raise')
+                    #             # If successful, convert the entire column
+                    #             df[col] = pd.to_numeric(df[col], errors='coerce')
+                    #             logger.debug(f"Converted column {col} to numeric")
+                    #     except (ValueError, TypeError):
+                    #         # Column cannot be converted to numeric, keep as is
+                    #         logger.debug(f"Column {col} cannot be converted to numeric, keeping as is")
+                    #         pass
 
             file_formats = {
                 'csv': "csv",
