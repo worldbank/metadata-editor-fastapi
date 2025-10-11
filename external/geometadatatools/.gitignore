@@ -1,0 +1,17 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# System files
+.DS_Store
+
+# big data files
+tests/sample_files/INEGI/
+tests/sample_files/drc_cpf.gdb/
+*.tif

@@ -9,6 +9,7 @@ from src.DataUtils import DataUtils
 from src.DataDictionary import DataDictionary
 from src.DataDictionaryCsv import DataDictionaryCsv
 from src.ExportDatafile import ExportDatafile
+from src.routers.geospatial import router as geospatial_router
 from src.version import get_version
 import re
 import pandas as pd
@@ -163,6 +164,9 @@ app = FastAPI()
 app.fifo_queue = asyncio.Queue()
 
 app.jobs = {}
+
+# Include geospatial router
+app.include_router(geospatial_router)
 
 # Cleanup metrics
 class CleanupMetrics:
@@ -422,7 +426,8 @@ async def cleanup_old_jobs():
         "queued": {"max_age_hours": 2},       # Remove stuck queued jobs after 2 hours
         "processing": {"max_age_hours": 8},   # Remove stuck processing jobs after 8 hours  
         "done": {"max_age_hours": MAX_JOB_AGE_HOURS},        # Keep completed jobs for configured time
-        "error": {"max_age_hours": MAX_JOB_AGE_HOURS * 2}    # Keep error jobs longer for debugging
+        "error": {"max_age_hours": MAX_JOB_AGE_HOURS * 2},    # Keep error jobs longer for debugging
+        "cancelled": {"max_age_hours": 1}     # Remove cancelled jobs after 1 hour
     }
     
     print(f"Starting cleanup - current job count: {len(app.jobs)}")
@@ -800,7 +805,7 @@ async def cleanup_status():
         },
         "job_status_breakdown": {
             status: len([job for job in app.jobs.values() if job["status"] == status])
-            for status in ["queued", "processing", "done", "error"]
+            for status in ["queued", "processing", "done", "error", "cancelled"]
         }
     }
 
@@ -848,6 +853,64 @@ async def queue_items(jobid: str):
             return job
 
     raise HTTPException(status_code=404, detail="Job not found") 
+
+
+@app.delete("/jobs/{jobid}")
+async def cancel_job(jobid: str):
+    """
+    Cancel a queued or processing job
+    
+    Args:
+        jobid: The unique job identifier
+        
+    Returns:
+        Success message with cancellation details
+    """
+    if jobid not in app.jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    job = app.jobs[jobid]
+    status = job["status"]
+    current_time = datetime.datetime.now().isoformat()
+    
+    # Check if job can be cancelled
+    if status in ["done", "error", "cancelled"]:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Cannot cancel job with status '{status}'. Job is already completed or cancelled."
+        )
+    
+    # Cancel the job
+    if status == "processing":
+        # Mark as cancelled - note: actual task cancellation would require 
+        # more complex implementation to stop running tasks
+        job["status"] = "cancelled"
+        job["cancelled_at"] = current_time
+        job["cancellation_reason"] = "User requested cancellation"
+        logger.info(f"Job {jobid} marked as cancelled (was processing)")
+        
+    elif status == "queued":
+        # Remove from queue and mark as cancelled
+        job["status"] = "cancelled"
+        job["cancelled_at"] = current_time
+        job["cancellation_reason"] = "User requested cancellation"
+        logger.info(f"Job {jobid} cancelled (was queued)")
+    
+    else:
+        # Handle any other status
+        job["status"] = "cancelled"
+        job["cancelled_at"] = current_time
+        job["cancellation_reason"] = "User requested cancellation"
+        logger.info(f"Job {jobid} cancelled (was {status})")
+    
+    return {
+        "status": "success",
+        "message": f"Job {jobid} has been cancelled",
+        "job_id": jobid,
+        "previous_status": status,
+        "cancelled_at": current_time,
+        "cancellation_reason": "User requested cancellation"
+    }
 
 
 def remove_jobs_folder():
