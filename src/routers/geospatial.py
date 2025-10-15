@@ -142,8 +142,7 @@ async def get_geospatial_layers_queue(
             "info": {
                 "file_path": request.file_path,
                 "layer_name": request.layer_name,
-                "band_index": request.band_index,
-                "return_object": request.return_object
+                "band_index": request.band_index
             }
         }
         
@@ -335,7 +334,6 @@ async def extract_geospatial_metadata_queue(
                 "layer_name_or_band_index": request.layer_name_or_band_index,
                 "categorical_allow_list": request.categorical_allow_list or [],
                 "categorical_deny_list": request.categorical_deny_list or [],
-                "return_object": request.return_object,
                 "available_layers": available_layers
             }
         }
@@ -434,7 +432,6 @@ async def extract_geospatial_metadata_batch_queue(
                 "layer_names_or_band_indices": request.layer_names_or_band_indices,
                 "categorical_allow_list": request.categorical_allow_list or [],
                 "categorical_deny_list": request.categorical_deny_list or [],
-                "return_object": request.return_object,
                 "available_layers": available_layers,
                 "total_layers": len(request.layer_names_or_band_indices)
             }
@@ -605,7 +602,6 @@ async def process_geospatial_metadata_job(jobid: str, request: GeospatialMetadat
             request.layer_name_or_band_index,
             request.categorical_allow_list,
             request.categorical_deny_list,
-            request.return_object,
             False  # generate_images=False to prevent threading issues
         )
         
@@ -663,7 +659,6 @@ async def process_geospatial_batch_metadata_job(jobid: str, request: GeospatialB
                 layer_name_or_band_index,
                 request.categorical_allow_list,
                 request.categorical_deny_list,
-                request.return_object,
                 False  # generate_images=False to prevent threading issues
             )
             results.append(result)
@@ -764,7 +759,6 @@ async def extract_geospatial_metadata_with_images_queue(
                 "layer_name_or_band_index": request.layer_name_or_band_index,
                 "categorical_allow_list": request.categorical_allow_list or [],
                 "categorical_deny_list": request.categorical_deny_list or [],
-                "return_object": request.return_object,
                 "available_layers": available_layers,
                 "generate_images": True,
                 "warning": "Image generation enabled - may cause threading issues"
@@ -823,7 +817,6 @@ async def process_geospatial_metadata_with_images_job(jobid: str, request: Geosp
             request.layer_name_or_band_index,
             request.categorical_allow_list,
             request.categorical_deny_list,
-            request.return_object,
             True  # generate_images=True (may cause threading issues)
         )
         

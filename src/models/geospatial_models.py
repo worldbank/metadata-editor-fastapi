@@ -31,31 +31,35 @@ class GeospatialImportRequest(BaseModel):
 
 
 class GeospatialMetadataRequest(BaseModel):
-    """Request model for geospatial metadata extraction"""
+    """Request model for geospatial metadata extraction - returns only metadata, not data objects"""
     file_path: str = Field(..., description="Path to the geospatial file")
     layer_name_or_band_index: Optional[Union[str, int]] = Field(None, description="Layer name or band index")
     categorical_allow_list: Optional[List[str]] = Field(None, description="List of columns to force-treat as categorical")
     categorical_deny_list: Optional[List[str]] = Field(None, description="List of columns to exclude from categorical analysis")
-    return_object: bool = Field(False, description="Whether to return the actual data object along with metadata")
 
 
 class GeospatialBatchMetadataRequest(BaseModel):
-    """Request model for batch geospatial metadata extraction"""
+    """Request model for batch geospatial metadata extraction - returns only metadata, not data objects"""
     file_path: str = Field(..., description="Path to the geospatial file")
     layer_names_or_band_indices: Optional[List[Union[str, int]]] = Field(None, description="List of layer names or band indices to process. If None, processes all layers.")
     categorical_allow_list: Optional[List[str]] = Field(None, description="List of columns to force-treat as categorical")
     categorical_deny_list: Optional[List[str]] = Field(None, description="List of columns to exclude from categorical analysis")
-    return_object: bool = Field(False, description="Whether to return the actual data objects along with metadata")
 
 
 class GeospatialMetadataResponse(BaseModel):
     """Response model for geospatial metadata"""
     file_info: Dict[str, Any] = Field(..., description="Basic file information")
-    layers: Optional[List[str]] = Field(None, description="Available layers in the file")
-    type: str = Field(..., description="File type")
-    bounding_box: Optional[Dict[str, float]] = Field(None, description="Bounding box in WGS84")
-    raster_stats: Optional[Dict[str, Any]] = Field(None, description="Raster statistics if applicable")
-    analytics: Optional[Dict[str, Any]] = Field(None, description="Analytical information")
+    file_type: str = Field(..., description="File type (vector or raster)")
+    layers: Optional[List[Union[str, int]]] = Field(None, description="Available layers or bands in the file")
+    bounding_box: Optional[Dict[str, float]] = Field(None, description="Bounding box in WGS84 coordinates")
+    bounding_box_error: Optional[str] = Field(None, description="Error message if bounding box extraction failed")
+    raster_stats: Optional[Dict[str, Any]] = Field(None, description="Raster statistics (for raster files only)")
+    analytics: Optional[Dict[str, Any]] = Field(None, description="Analytical information from read_and_enrich")
+    crs: Optional[Dict[str, Any]] = Field(None, description="Coordinate reference system information (for vector files)")
+    projection: Optional[str] = Field(None, description="Projection information (for raster files)")
+    img_strings: Optional[List[str]] = Field(None, description="Base64 encoded preview images")
+    images_disabled: Optional[bool] = Field(None, description="Whether image generation was disabled")
+    images_disabled_reason: Optional[str] = Field(None, description="Reason why images were disabled")
     status: str = Field("success", description="Operation status")
 
 

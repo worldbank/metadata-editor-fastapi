@@ -12,13 +12,15 @@ if external_path not in sys.path:
 
 # Conditional imports for geospatial dependencies
 try:
-    from geometadatatools import get_file_info, read_and_enrich, total_bounding_box_in_wgs84
+    from geometadatatools import get_file_info, read_and_enrich, total_bounding_box_in_wgs84, get_data, get_images
     GEOSPATIAL_PACKAGES_AVAILABLE = True
 except ImportError as e:
     GEOSPATIAL_PACKAGES_AVAILABLE = False
     get_file_info = None
     read_and_enrich = None
     total_bounding_box_in_wgs84 = None
+    get_data = None
+    get_images = None
     logger = logging.getLogger(__name__)
     logger.warning(f"Geospatial packages not available: {e}")
 
@@ -106,7 +108,7 @@ class GeospatialService:
             raise
     
     def enrich_file(self, file_path: str, layer_name: Optional[str] = None, 
-                   band_index: Optional[int] = None, return_object: bool = False) -> Tuple[Any, Dict[str, Any]]:
+                   band_index: Optional[int] = None, return_object: bool = False) -> Union[Dict[str, Any], Tuple[Any, Dict[str, Any]]]:
         """
         Enrich a geospatial file with additional metadata and analytics
         
@@ -117,7 +119,7 @@ class GeospatialService:
             return_object: Whether to return the actual data object
             
         Returns:
-            Tuple of (data_object, enriched_info)
+            Either enriched_info dict or Tuple of (data_object, enriched_info)
         """
         try:
             logger.info(f"Enriching file: {file_path}, layer: {layer_name}, band: {band_index}")
@@ -129,24 +131,17 @@ class GeospatialService:
             # Determine layer/band parameter
             layer_or_band = layer_name if layer_name else (band_index if band_index is not None else 0)
             
-            # Enrich file using geometadatatools
-            if return_object:
-                data_object, enriched_info = read_and_enrich(
-                    file_path, 
-                    layer_or_band, 
-                    return_object=True
-                )
-            else:
-                enriched_info = read_and_enrich(
-                    file_path, 
-                    layer_or_band, 
-                    return_object=False
-                )
-                data_object = None
+            # Get enriched metadata using read_and_enrich
+            enriched_info = read_and_enrich(
+                file_path, 
+                layer_or_band
+            )
             
             logger.info(f"Successfully enriched file: {file_path}")
             
             if return_object:
+                # Separately get the data object using get_data
+                data_object = get_data(file_path, layer_or_band)
                 return data_object, enriched_info
             else:
                 return enriched_info
@@ -159,21 +154,25 @@ class GeospatialService:
                                     layer_name_or_band_index: Optional[Union[str, int]] = None,
                                     categorical_allow_list: Optional[List[str]] = None,
                                     categorical_deny_list: Optional[List[str]] = None,
-                                    return_object: bool = False,
-                                    generate_images: bool = False) -> Union[Dict[str, Any], Tuple[Any, Dict[str, Any]]]:
+                                    generate_images: bool = False) -> Dict[str, Any]:
         """
-        Extract comprehensive metadata from a geospatial file using read_and_enrich
+        Extract comprehensive metadata from a geospatial file using read_and_enrich.
+        This method returns ONLY metadata, not data objects.
+        
+        For raster files, includes:
+        - Bounding box in WGS84 coordinates
+        - Raster statistics
+        - Layer/band specific analytics
         
         Args:
             file_path: Path to the geospatial file
             layer_name_or_band_index: Layer name or band index for processing
             categorical_allow_list: List of columns to force-treat as categorical
             categorical_deny_list: List of columns to exclude from categorical analysis
-            return_object: Whether to return the actual data object along with metadata
             generate_images: Whether to generate base64 images (may cause threading issues)
             
         Returns:
-            Either enriched metadata dict or tuple of (data_object, metadata_dict)
+            Dictionary containing enriched metadata including bounding box and raster stats
         """
         try:
             logger.info(f"Extracting comprehensive metadata for file: {file_path}")
@@ -182,43 +181,85 @@ class GeospatialService:
             if not os.path.exists(file_path):
                 raise FileNotFoundError(f"File not found: {file_path}")
             
+            # Get basic file info first to determine file type and get raster stats
+            file_info = get_file_info(file_path)
+            file_type = file_info.get("type", "unknown")
+            
             # Set default layer/band if not specified
             if layer_name_or_band_index is None:
-                # Get file info to determine default layer/band
-                file_info = get_file_info(file_path)
-                if file_info.get("type") == "vector" and file_info.get("layers"):
+                if file_type == "vector" and file_info.get("layers"):
                     layer_name_or_band_index = file_info["layers"][0]  # Use first layer
-                elif file_info.get("type") == "raster":
+                elif file_type == "raster":
                     layer_name_or_band_index = 1  # Use first band
             
             # Extract metadata using read_and_enrich
-            if return_object:
-                data_object, metadata = read_and_enrich(
-                    file_path,
-                    layer_name_or_band_index,
-                    categorical_allow_list=categorical_allow_list or [],
-                    categorical_deny_list=categorical_deny_list or [],
-                    return_object=True
-                )
-                logger.info(f"Successfully extracted metadata with data object for: {file_path}")
-                return data_object, metadata
-            else:
-                metadata = read_and_enrich(
-                    file_path,
-                    layer_name_or_band_index,
-                    categorical_allow_list=categorical_allow_list or [],
-                    categorical_deny_list=categorical_deny_list or [],
-                    return_object=False
-                )
-                
-                # Remove image strings if image generation is disabled to prevent threading issues
-                if not generate_images and "img_strings" in metadata:
+            metadata = read_and_enrich(
+                file_path,
+                layer_name_or_band_index,
+                categorical_allow_list=categorical_allow_list,
+                categorical_deny_list=categorical_deny_list
+            )
+            
+            # Add file-level metadata
+            metadata["file_info"] = file_info.get("file", {})
+            metadata["file_type"] = file_type
+            metadata["layers"] = file_info.get("layers", [])
+            
+            # Add bounding box for all file types
+            try:
+                # Try to get bounding box with geohash
+                bbox = total_bounding_box_in_wgs84(file_path)
+                metadata["bounding_box"] = bbox
+            except Exception as bbox_error:
+                logger.warning(f"Failed to get bounding box with geohash: {bbox_error}")
+                # Fallback: try to get raw bounding box without geohash
+                try:
+                    from geometadatatools.geospatial_schema_elements import file_level_bounding_box_in_wgs84
+                    raw_bbox = file_level_bounding_box_in_wgs84(file_path, file_type)
+                    if raw_bbox:
+                        metadata["bounding_box"] = {
+                            "geographicBoundingBox": {
+                                "westBoundLongitude": raw_bbox["xmin"],
+                                "eastBoundLongitude": raw_bbox["xmax"],
+                                "southBoundLatitude": raw_bbox["ymin"],
+                                "northBoundLatitude": raw_bbox["ymax"],
+                            }
+                        }
+                        logger.info("Successfully extracted bounding box without geohash")
+                    else:
+                        metadata["bounding_box"] = None
+                        metadata["bounding_box_error"] = "Failed to extract bounding box coordinates"
+                except Exception as fallback_error:
+                    logger.warning(f"Fallback bounding box extraction also failed: {fallback_error}")
+                    metadata["bounding_box"] = None
+                    metadata["bounding_box_error"] = f"Bounding box extraction failed: {str(bbox_error)}"
+            
+            # Add raster-specific metadata
+            if file_type == "raster":
+                raster_stats = file_info.get("raster_stats")
+                if raster_stats:
+                    metadata["raster_stats"] = raster_stats
+                else:
+                    metadata["raster_stats"] = None
+                    logger.warning("No raster statistics available")
+            
+            # Generate images if requested
+            if generate_images:
+                try:
+                    img_strings = get_images(file_path, layer_name_or_band_index)
+                    metadata["img_strings"] = img_strings
+                except Exception as img_error:
+                    logger.warning(f"Failed to generate images: {img_error}")
                     metadata["img_strings"] = []
                     metadata["images_disabled"] = True
-                    metadata["images_disabled_reason"] = "Image generation disabled to prevent threading issues"
-                
-                logger.info(f"Successfully extracted metadata for: {file_path}")
-                return metadata
+                    metadata["images_disabled_reason"] = str(img_error)
+            else:
+                metadata["img_strings"] = []
+                metadata["images_disabled"] = True
+                metadata["images_disabled_reason"] = "Image generation disabled to prevent threading issues"
+            
+            logger.info(f"Successfully extracted comprehensive metadata for: {file_path}")
+            return metadata
                 
         except Exception as e:
             logger.error(f"Error extracting comprehensive metadata for {file_path}: {str(e)}")

@@ -5,7 +5,6 @@ import fiona
 import geopandas as gpd
 from fiona.errors import DriverError
 from osgeo import gdal
-from pyogrio.errors import DataSourceError
 
 from .analytics import (
     file_level_raster_stats,
@@ -25,6 +24,8 @@ __all__ = [
     "read_and_enrich",
     "get_file_info",
     "total_bounding_box_in_wgs84",
+    "get_data",
+    "get_images",
 ]
 
 
@@ -99,7 +100,6 @@ def read_and_enrich(
     layer_name_or_band_index: str | int,
     categorical_allow_list: Optional[list[str]] = None,
     categorical_deny_list: Optional[list[str]] = None,
-    return_object: bool = False,
 ) -> gpd.GeoDataFrame | dict:
     """
     Reads a file and enriches it with additional metadata.
@@ -108,13 +108,14 @@ def read_and_enrich(
         filepath (str or Path): The path to the file to be read and enriched.
         layer_name_or_band_index (str|int, optional): The name of the layer or band index to read from the file.
             If None, the first layer or band will be used.
-        return_object (bool): If True, returns the GeoDataFrame or GDAL dataset object along with the metadata.
-            If False, returns only the metadata.
+        categorical_allow_list (list of str, optional): List of column names to always treat as categorical.
+        categorical_deny_list (list of str, optional): List of column names to never treat as categorical.
 
     Returns:
         dict or tuple: A dictionary containing the enriched metadata, and optionally the GeoDataFrame or GDAL dataset object.
     """
-    try:
+    file_type = _get_vector_or_raster(filepath)
+    if file_type == "vector":
         # Attempt to read as vector data
         gdf = file_to_geodf(filepath, layer_name_or_band_index)
         crs = _get_crs_from_gdf(gdf)
@@ -123,33 +124,92 @@ def read_and_enrich(
             categorical_allow_list=categorical_allow_list or [],
             categorical_deny_list=categorical_deny_list or [],
         )
-        img_string = to_base64_image(gdf) if not gdf.empty else None
 
-        return_dict = {
+        return {
             "crs": crs,
             "analytics": analytics,
-            "img_strings": [img_string],
         }
+    # Fallback to raster data
+    dataset = file_to_gdal(filepath)
+    projection = _get_projection_from_raster(dataset)
+    analytics = get_raster_analytics(dataset, layer_name_or_band_index)
 
-        return (gdf, return_dict) if return_object else return_dict
+    return {
+        "projection": projection,
+        "analytics": analytics,
+    }
 
-    except DataSourceError:
-        # Fallback to raster data
-        dataset = file_to_gdal(filepath)
-        projection = _get_projection_from_raster(dataset)
-        analytics = get_raster_analytics(dataset, layer_name_or_band_index)
-        img_strings = raster_to_base64_images(dataset, layer_name_or_band_index) or []
 
-        return_dict = {
-            "projection": projection,
-            "analytics": analytics,
-            "img_strings": img_strings,
-        }
+def get_data(
+    filepath: str | Path, layer_name_or_band_index: str | int | None = None
+) -> gpd.GeoDataFrame | gdal.Dataset:
+    """
+    Reads a file and returns the data object. For vector data, returns a GeoDataFrame. For raster data, returns a GDAL dataset object.
 
-        return (dataset, return_dict) if return_object else return_dict
+    Args:
+        filepath (str or Path): The path to the file to be read.
+        layer_name_or_band_index (str|int): The name of the layer or band index to read from the file. Only used for vector data. If None, the first layer or band will be used.
+
+    Returns:
+        gpd.GeoDataFrame or gdal.Dataset: The data object read from the file. For vector data, a GeoDataFrame is returned. For raster data, a GDAL dataset object is returned.
+    """
+    file_type = _get_vector_or_raster(filepath)
+    if file_type == "vector":
+        # list layers
+        if layer_name_or_band_index is None:
+            layer_names = fiona.listlayers(filepath)
+            layer_name_or_band_index = layer_names[0] if layer_names else None
+        # Attempt to read as vector data
+        return file_to_geodf(filepath, layer_name_or_band_index)
+    # Fallback to raster data
+    return file_to_gdal(filepath)
+
+
+def get_images(filepath: str | Path, layer_name_or_band_index: str | int | None = None) -> list[str]:
+    """
+    Reads a file and returns base64-encoded images.
+
+    Args:
+        filepath (str or Path): The path to the file to be read.
+        layer_name_or_band_index (str|int): The name of the layer or band index to read from the file. If None, all layers or bands will be processed.
+
+    Returns:
+        list: A list of base64-encoded image strings.
+    """
+    file_type = _get_vector_or_raster(filepath)
+    if file_type == "vector":
+        # Attempt to read as vector data
+        # list layers
+        if layer_name_or_band_index is None:
+            layer_names = fiona.listlayers(filepath)
+        else:
+            layer_names = [layer_name_or_band_index]
+        img_strings = []
+        for layer_name in layer_names:
+            gdf = file_to_geodf(filepath, layer_name)
+            img_string = to_base64_image(gdf) if not gdf.empty else None
+            if img_string:
+                img_strings.append(img_string)
+        return img_strings
+    # Fallback to raster data
+    dataset = file_to_gdal(filepath)
+    return raster_to_base64_images(dataset, layer_name_or_band_index) or []
 
 
 def get_file_info(filename) -> list[dict | str]:
+    """
+    Get basic information about a file, including its type (vector or raster), layers, and
+    file-level analytics.
+
+    Args:
+        filename (str or Path): The path to the file.
+
+    Returns:
+        list: A list of dictionaries containing file information and analytics.
+
+    Raises:
+        ValueError: If the file cannot be opened or its type cannot be determined.
+    """
     return_dict = {"file": get_file_analytics(filename)}
 
     try:
