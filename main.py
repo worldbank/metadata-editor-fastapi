@@ -4,7 +4,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import pyreadstat
 import time
-from typing import List
+from typing import List, Optional, Dict, Any
 from src.DataUtils import DataUtils
 from src.DataDictionary import DataDictionary
 from src.DataDictionaryCsv import DataDictionaryCsv
@@ -156,6 +156,21 @@ class VarInfo(BaseModel):
     weights: List[WeightsColumns] = []
     missings: List[UserMissings] = []
 
+class DataProcessingParams(BaseModel):
+    """Parameters for unified data processing (CSV generation + data dictionary)"""
+    file_path: str
+    generate_csv: bool = True  # Whether to generate CSV
+    generate_data_dictionary: bool = True  # Whether to generate data dictionary
+    
+    # Data dictionary specific parameters (optional)
+    var_names: List = []
+    weights: List[WeightsColumns] = []
+    missings: Optional[Dict[str, Any]] = {}
+    dtypes: Dict[str, Any] = {}
+    value_labels: Dict[str, Any] = {}
+    name_labels: Dict[str, Any] = {}
+    categorical: List[str] = []
+    export_format: str = "csv"
 
 
 datadict=DataDictionary()
@@ -728,6 +743,30 @@ async def export_data_queue(params: DictParams):
         })
 
 
+@app.post("/process-microdata-queue")
+async def process_microdata_queue(params: DataProcessingParams):
+    """Unified endpoint to process microdata files (CSV generation + data dictionary)"""
+    jobid='job-' + str(time.time())
+    current_time = datetime.datetime.now().isoformat()
+    app.jobs[jobid]={
+            "jobid":jobid,
+            "jobtype":"process-microdata",
+            "status":"queued",
+            "created_at": current_time,
+            "completed_at": None,
+            "last_accessed": current_time,
+            "info":params
+        }
+    
+    process_microdata_callback = functools.partial(process_microdata_file, jobid, params)
+    await app.fifo_queue.put( process_microdata_callback )
+
+    return JSONResponse(status_code=202, content={
+        "message": "Microdata processing is queued",
+        "job_id": jobid
+        })
+
+
 async def export_data_file(jobid, params: DictParams):
     loop = asyncio.get_running_loop()
     file_ext=os.path.splitext(params.file_path)[1]
@@ -775,6 +814,132 @@ async def export_data_file(jobid, params: DictParams):
         app.jobs[jobid]["error"]=str(e)
         app.jobs[jobid]["error_details"]=error_info
         app.jobs[jobid]["completed_at"] = datetime.datetime.now().isoformat()
+        return {"status": "error", "error": str(e), "error_details": error_info}
+
+
+async def process_microdata_file(jobid, params: DataProcessingParams):
+    """Process microdata file with both CSV generation and data dictionary creation"""
+    loop = asyncio.get_running_loop()
+    app.jobs[jobid]["status"] = "processing"
+    
+    results = {
+        "csv_generation": None,
+        "data_dictionary": None,
+        "status": "success",
+        "processing_steps": []
+    }
+    
+    try:
+        logger.debug(f"Starting microdata processing for job {jobid} with params: {params}")
+        
+        # Step 1: Generate CSV if requested
+        if params.generate_csv:
+            try:
+                logger.debug(f"Job {jobid}: Starting CSV generation")
+                app.jobs[jobid]["current_step"] = "generating_csv"
+                results["processing_steps"].append("csv_generation_started")
+                
+                fileinfo = FileInfo(file_path=params.file_path)
+                csv_result = await loop.run_in_executor(None, write_csv_file, fileinfo)
+                results["csv_generation"] = csv_result
+                results["processing_steps"].append("csv_generation_completed")
+                
+                logger.debug(f"Job {jobid}: CSV generation completed")
+                
+            except Exception as e:
+                error_msg = f"CSV generation failed: {str(e)}"
+                logger.error(f"Job {jobid}: {error_msg}")
+                results["csv_generation"] = {"status": "error", "error": error_msg}
+                results["processing_steps"].append("csv_generation_failed")
+                
+                # If CSV generation fails and data dictionary requires CSV, fail the whole job
+                file_ext = os.path.splitext(params.file_path)[1].lower()
+                if params.generate_data_dictionary and file_ext == '.csv':
+                    raise Exception(f"Cannot generate data dictionary for CSV file after CSV generation failed: {error_msg}")
+        
+        # Step 2: Generate data dictionary if requested
+        if params.generate_data_dictionary:
+            try:
+                logger.debug(f"Job {jobid}: Starting data dictionary generation")
+                app.jobs[jobid]["current_step"] = "generating_data_dictionary"
+                results["processing_steps"].append("data_dictionary_started")
+                
+                # Convert DataProcessingParams to DictParams for compatibility
+                dict_params = DictParams(
+                    file_path=params.file_path,
+                    var_names=params.var_names,
+                    weights=params.weights,
+                    missings=params.missings,
+                    dtypes=params.dtypes,
+                    value_labels=params.value_labels,
+                    name_labels=params.name_labels,
+                    categorical=params.categorical,
+                    export_format=params.export_format
+                )
+                
+                file_ext = os.path.splitext(params.file_path)[1]
+                if file_ext.lower() == '.csv':
+                    datadict = DataDictionaryCsv()
+                else:
+                    datadict = DataDictionary()
+                
+                dict_result = await loop.run_in_executor(None, datadict.get_data_dictionary_variable, dict_params)
+                results["data_dictionary"] = dict_result
+                results["processing_steps"].append("data_dictionary_completed")
+                
+                logger.debug(f"Job {jobid}: Data dictionary generation completed")
+                
+            except Exception as e:
+                error_msg = f"Data dictionary generation failed: {str(e)}"
+                logger.error(f"Job {jobid}: {error_msg}")
+                results["data_dictionary"] = {"status": "error", "error": error_msg}
+                results["processing_steps"].append("data_dictionary_failed")
+        
+        # Determine overall status
+        csv_failed = params.generate_csv and results["csv_generation"] and results["csv_generation"].get("status") == "error"
+        dict_failed = params.generate_data_dictionary and results["data_dictionary"] and results["data_dictionary"].get("status") == "error"
+        
+        if csv_failed and dict_failed:
+            results["status"] = "error"
+        elif csv_failed or dict_failed:
+            results["status"] = "partial_success"
+        
+        app.jobs[jobid]["status"] = "done"
+        app.jobs[jobid]["completed_at"] = datetime.datetime.now().isoformat()
+        app.jobs[jobid].pop("current_step", None)  # Remove current_step from final result
+        
+        # Save results to file
+        file_path = os.path.join('jobs', str(jobid) + '.json')
+        with open(file_path, 'w') as outfile:
+            json.dump(results, outfile)
+        
+        logger.debug(f"Microdata processing completed for job {jobid}")
+        return {"status": "success", "file_path": file_path}
+    
+    except Exception as e:
+        # Capture detailed error information
+        error_info = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "traceback": traceback.format_exc(),
+            "function": "process_microdata_file",
+            "jobid": jobid,
+            "params": {
+                "file_path": params.file_path,
+                "generate_csv": params.generate_csv,
+                "generate_data_dictionary": params.generate_data_dictionary,
+                "var_names": params.var_names,
+                "export_format": params.export_format
+            }
+        }
+        
+        logger.error(f"Microdata processing failed for job {jobid}: {error_info}")
+        
+        app.jobs[jobid]["status"] = "error"
+        app.jobs[jobid]["error"] = str(e)
+        app.jobs[jobid]["error_details"] = error_info
+        app.jobs[jobid]["completed_at"] = datetime.datetime.now().isoformat()
+        app.jobs[jobid].pop("current_step", None)  # Remove current_step from final result
         return {"status": "error", "error": str(e), "error_details": error_info}
 
 
