@@ -206,7 +206,20 @@ class ExportDatafile:
             if params.export_format == 'csv':
                 df.to_csv(output_file_path, index=False)
             elif params.export_format in ['dta','stata']:
-                pyreadstat.write_dta(df, output_file_path, missing_user_values=params.missings, variable_value_labels=variable_value_labels, column_labels=params.name_labels)
+                # pyreadstat version mapping:
+                #   version 12 → Stata 14 (release 115)
+                #   version 13 → Stata 15 (release 117)
+                #   version 14 → Stata 16 (release 118)
+                #   version 15 → Stata 17/18 (release 119)
+                pyreadstat_version = 12
+                pyreadstat.write_dta(
+                    df, 
+                    output_file_path, 
+                    file_label='',
+                    column_labels=params.name_labels, 
+                    version=pyreadstat_version,
+                    variable_value_labels=variable_value_labels, 
+                    missing_user_values=params.missings)
             elif params.export_format in ['spss','sav']:
                 # For SPSS export, convert special missing values to system missings
                 # SPSS doesn't support special missing values like 'a', 'b', 'c'
@@ -573,5 +586,5 @@ class ExportDatafile:
             raise Exception(f"Failed to prepare value labels for SPSS export: {str(e)}") from e
         
 
-
+    
     
