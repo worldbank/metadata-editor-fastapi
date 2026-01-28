@@ -149,11 +149,11 @@ class ExportDatafile:
             if params.export_format not in ['csv']:
                 for col in df.columns:
                     # only apply to columns in params.missings
-                    #if params.missings and col in params.missings:
-                    #    logger.debug(f"Converting mixed column to numeric: {col}")
-                    #    #convert mixed columns to numeric
-                    #    df[col] = self.convert_mixed_column(df[col])
-                    #    continue
+                    if params.missings and col in params.missings:
+                        logger.debug(f"Converting mixed column to numeric: {col}")
+                        #convert mixed columns to numeric
+                        df[col] = self.convert_mixed_column(df[col])
+                        continue
                     
                     # For SPSS export, skip conversion of object/string columns to preserve string data types
                     if params.export_format in ['spss', 'sav']:
@@ -350,6 +350,9 @@ class ExportDatafile:
                         if var not in combined_missing_values:
                             combined_missing_values[var] = []
                         combined_missing_values[var].append(key)
+
+            # make sure missing values are unique
+            combined_missing_values = {k: list(set(v)) for k, v in combined_missing_values.items()}
 
             logger.debug(f"Final combined missing values: {combined_missing_values}")
             return combined_missing_values
