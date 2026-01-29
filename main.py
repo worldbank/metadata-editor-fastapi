@@ -14,6 +14,7 @@ from src.version import get_version
 import re
 import pandas as pd
 import numpy as np
+import math
 import os
 #from pydantic import BaseSettings
 from pydantic_settings import BaseSettings
@@ -171,6 +172,13 @@ class DataProcessingParams(BaseModel):
     name_labels: Dict[str, Any] = {}
     categorical: List[str] = []
     export_format: str = "csv"
+
+
+class RemoveColumnsParams(BaseModel):
+    """Parameters for removing columns from a CSV file. Writes to a new file; caller replaces original if desired."""
+    file_path: str
+    column_names: List[str]
+    output_path: str
 
 
 datadict=DataDictionary()
@@ -386,7 +394,42 @@ def write_csv_file(fileinfo: FileInfo):
     return output
 
 
+def remove_columns_from_csv(params: RemoveColumnsParams) -> Dict[str, Any]:
+    """
+    Read a CSV, drop the given columns, and write to output_path.
+    If output_path already exists, it is overwritten. Caller is responsible for replacing the original file if desired.
+    """
+    if not is_safe_path(params.file_path):
+        raise ValueError("Invalid file path: " + params.file_path)
+    if not is_safe_path(params.output_path):
+        raise ValueError("Invalid output path: " + params.output_path)
+    if not os.path.exists(params.file_path):
+        raise FileNotFoundError("File not found: " + params.file_path)
 
+    file_ext = os.path.splitext(params.file_path)[1].lower()
+    if file_ext != ".csv":
+        raise ValueError("Source file must be a CSV: " + params.file_path)
+
+    output_dir = os.path.dirname(params.output_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
+    df = pd.read_csv(params.file_path)
+    original_columns = list(df.columns)
+    # Drop only columns that exist; ignore missing names
+    to_drop = [c for c in params.column_names if c in df.columns]
+    df = df.drop(columns=to_drop, errors="ignore")
+    df.to_csv(params.output_path, index=False)
+
+    return {
+        "status": "success",
+        "output_path": params.output_path,
+        "rows": len(df),
+        "columns_remaining": len(df.columns),
+        "columns_removed": to_drop,
+        "columns_requested_not_found": [c for c in params.column_names if c not in original_columns],
+        "output_file_size": DataUtils.sizeof_fmt(os.path.getsize(params.output_path)),
+    }
 
 
 def detect_column_types(df,meta):
@@ -398,6 +441,19 @@ def detect_column_types(df,meta):
         df_types=df.convert_dtypes()
     
     return df_types.dtypes.to_dict()
+
+
+def sanitize_jsonable(obj):
+    """Recursively replace NaN/inf values with None for JSON safety."""
+    if isinstance(obj, float):
+        return None if math.isnan(obj) or math.isinf(obj) else obj
+    if isinstance(obj, np.generic):
+        return sanitize_jsonable(obj.item())
+    if isinstance(obj, dict):
+        return {k: sanitize_jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [sanitize_jsonable(v) for v in obj]
+    return obj
 
 
 
@@ -685,6 +741,57 @@ async def write_csv_file_callback(jobid, fileinfo: FileInfo):
         json.dump(result, outfile)
         
     return {"status": "success", "file_path": file_path}
+
+
+@app.post("/remove-csv-columns-queue")
+async def remove_csv_columns_queue(params: RemoveColumnsParams):
+    """Queue a job to remove specified columns from a CSV and write the result to a new file. If output_path exists, it is overwritten."""
+    if not is_safe_path(params.file_path):
+        raise HTTPException(status_code=400, detail="Invalid file path: " + params.file_path)
+    if not is_safe_path(params.output_path):
+        raise HTTPException(status_code=400, detail="Invalid output path: " + params.output_path)
+    if not os.path.exists(params.file_path):
+        raise HTTPException(status_code=404, detail="File not found: " + params.file_path)
+    if os.path.splitext(params.file_path)[1].lower() != ".csv":
+        raise HTTPException(status_code=400, detail="Source file must be a CSV: " + params.file_path)
+
+    jobid = "job-" + str(time.time())
+    current_time = datetime.datetime.now().isoformat()
+    app.jobs[jobid] = {
+        "jobid": jobid,
+        "jobtype": "remove-csv-columns",
+        "status": "queued",
+        "created_at": current_time,
+        "completed_at": None,
+        "last_accessed": current_time,
+        "info": params.model_dump(),
+    }
+    callback = functools.partial(remove_columns_from_csv_callback, jobid, params)
+    await app.fifo_queue.put(callback)
+
+    return JSONResponse(status_code=202, content={
+        "message": "Remove CSV columns job is queued",
+        "job_id": jobid,
+    })
+
+
+async def remove_columns_from_csv_callback(jobid, params: RemoveColumnsParams):
+    loop = asyncio.get_running_loop()
+    app.jobs[jobid]["status"] = "processing"
+    try:
+        result = await loop.run_in_executor(None, remove_columns_from_csv, params)
+        app.jobs[jobid]["status"] = "done"
+        app.jobs[jobid]["completed_at"] = datetime.datetime.now().isoformat()
+        file_path = os.path.join("jobs", str(jobid) + ".json")
+        with open(file_path, "w") as outfile:
+            json.dump(result, outfile)
+        return {"status": "success", "file_path": file_path}
+    except Exception as e:
+        logger.error(f"Remove CSV columns failed for job {jobid}: {str(e)}")
+        app.jobs[jobid]["status"] = "error"
+        app.jobs[jobid]["error"] = str(e)
+        app.jobs[jobid]["completed_at"] = datetime.datetime.now().isoformat()
+        return {"status": "error", "error": str(e)}
     
     
 
@@ -790,11 +897,10 @@ async def export_data_file(jobid, params: DictParams):
         return {"status": "success", "file_path": file_path}
     
     except Exception as e:
-        # Capture detailed error information
+        # Capture detailed error information (no traceback in response/log payloads)
         error_info = {
             "error_type": type(e).__name__,
             "error_message": str(e),
-            "traceback": traceback.format_exc(),
             "function": "export_data_file",
             "jobid": jobid,
             "params": {
@@ -804,17 +910,26 @@ async def export_data_file(jobid, params: DictParams):
                 "missings": params.missings,
                 "dtypes": params.dtypes,
                 "value_labels": params.value_labels,
-                "export_format": params.export_format
-            }
+                "export_format": params.export_format,
+            },
         }
-        
+
+        # Log concise error; full traceback is suppressed for API/terminal output
         logger.error(f"Export failed for job {jobid}: {error_info}")
         
         app.jobs[jobid]["status"]="error"
         app.jobs[jobid]["error"]=str(e)
-        app.jobs[jobid]["error_details"]=error_info
+        app.jobs[jobid]["error_details"]={
+            "error_type": error_info["error_type"],
+            "error_message": error_info["error_message"],
+            "function": error_info["function"],
+        }
         app.jobs[jobid]["completed_at"] = datetime.datetime.now().isoformat()
-        return {"status": "error", "error": str(e), "error_details": error_info}
+        return {
+            "status": "error",
+            "error": str(e),
+            "error_details": app.jobs[jobid]["error_details"],
+        }
 
 
 async def process_microdata_file(jobid, params: DataProcessingParams):
@@ -1003,8 +1118,8 @@ async def queue_items(jobid: str):
             else:
                 raise HTTPException(status_code=400, detail="Failed to load job data") 
 
-            job_response=job.copy()
-            job_response['data']=data            
+            job_response = sanitize_jsonable(job.copy())
+            job_response['data'] = sanitize_jsonable(data)
             return job_response
         elif (job["status"]=="error"):
             print ("job error", job)
@@ -1015,7 +1130,7 @@ async def queue_items(jobid: str):
             else:
                 raise HTTPException(status_code=400, detail=job['error'])
         else:
-            return job
+            return sanitize_jsonable(job)
 
     raise HTTPException(status_code=404, detail="Job not found") 
 
