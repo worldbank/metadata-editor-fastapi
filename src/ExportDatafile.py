@@ -128,6 +128,19 @@ class ExportDatafile:
 
             logger.debug(f"Loading file: {params.file_path}")
             df,meta = self.load_file(params,usecols=columns, dtypes=dtypes)
+
+            # Drop excluded fields from the dataframe
+            if params.exclude_fields:
+                cols_to_drop = [c for c in params.exclude_fields if c in df.columns]
+                if cols_to_drop:
+                    df = df.drop(columns=cols_to_drop)
+                    logger.debug(f"Dropped excluded fields: {cols_to_drop}")
+                    # Keep only metadata for columns still present
+                    params.name_labels = {k: v for k, v in params.name_labels.items() if k in df.columns}
+                    params.missings = {k: v for k, v in (params.missings or {}).items() if k in df.columns}
+                    params.value_labels = {k: v for k, v in params.value_labels.items() if k in df.columns}
+                    params.dtypes = {k: v for k, v in params.dtypes.items() if k in df.columns}
+
             variable_value_labels=self.parse_value_labels(variable_value_labels, params.export_format)
 
             # get all single character value labels that are not numeric and add them to missing_value_labels
@@ -251,7 +264,6 @@ class ExportDatafile:
             error_info = {
                 "error_type": type(e).__name__,
                 "error_message": str(e),
-                "traceback": traceback.format_exc(),
                 "function": "export_file",
                 "params": {
                     "file_path": params.file_path,
@@ -260,9 +272,10 @@ class ExportDatafile:
                     "missings": params.missings,
                     "dtypes": params.dtypes,
                     "value_labels": params.value_labels,
-                    "export_format": params.export_format
-                }
+                    "export_format": params.export_format,
+                },
             }
+            
             logger.error(f"Export file failed: {error_info}")
             raise Exception(f"Export failed in export_file: {str(e)}") from e
 

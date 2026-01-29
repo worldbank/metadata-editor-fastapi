@@ -15,3 +15,4 @@ class DictParams(BaseModel):
     name_labels: Dict[str, Any] = {}
     categorical: List[str] = []
     export_format: str = "csv"
+    exclude_fields: List[str] = []  # field names to remove from exported file
