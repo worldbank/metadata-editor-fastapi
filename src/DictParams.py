@@ -24,4 +24,6 @@ class DictParams(BaseModel):
     name_labels: Dict[str, Any] = {}
     categorical: List[str] = []
     export_format: str = "csv"
+    export_options: Optional[Dict[str, Any]] = {}  # format-specific options (e.g. {"version": 14} for Stata)
+    output_filename: Optional[str] = None  # desired output filename (without extension); defaults to source file's base name
     exclude_fields: List[str] = []  # field names to remove from exported file

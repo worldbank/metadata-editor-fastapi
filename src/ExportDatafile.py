@@ -203,9 +203,26 @@ class ExportDatafile:
 
             if params.export_format not in file_formats:
                 raise Exception("file format not supported: " + params.export_format)
-            
-            output_folder_path = os.path.join(os.path.dirname(params.file_path),"tmp")
-            output_file_path = os.path.join(output_folder_path,os.path.splitext(os.path.basename(params.file_path))[0] + '.' + file_formats[params.export_format])
+
+            # Resolve export options and Stata version
+            export_opts = params.export_options or {}
+            # pyreadstat version mapping:
+            #   version 12 → Stata 12/14 (dta release 115)
+            #   version 13 → Stata 13/15 (dta release 117)
+            #   version 14 → Stata 14/15/16 (dta release 118)
+            #   version 15 → Stata 15/16/17/18 (dta release 119)
+            pyreadstat_version = export_opts.get("version", 12) if params.export_format in ['dta', 'stata'] else None
+
+            # Use client-supplied output_filename if provided, otherwise fall back to the source file's base name
+            file_ext_out = file_formats[params.export_format]
+            if params.output_filename:
+                # Strip any extension the caller may have included
+                base_name = os.path.splitext(params.output_filename)[0]
+            else:
+                base_name = os.path.splitext(os.path.basename(params.file_path))[0]
+
+            output_folder_path = os.path.join(os.path.dirname(params.file_path), "tmp")
+            output_file_path = os.path.join(output_folder_path, f"{base_name}.{file_ext_out}")
 
             if not os.path.exists(output_folder_path):
                 os.makedirs(output_folder_path)
@@ -219,12 +236,6 @@ class ExportDatafile:
             if params.export_format == 'csv':
                 df.to_csv(output_file_path, index=False)
             elif params.export_format in ['dta','stata']:
-                # pyreadstat version mapping:
-                #   version 12 → Stata 14 (release 115)
-                #   version 13 → Stata 15 (release 117)
-                #   version 14 → Stata 16 (release 118)
-                #   version 15 → Stata 17/18 (release 119)
-                pyreadstat_version = 12
                 pyreadstat.write_dta(
                     df, 
                     output_file_path, 
