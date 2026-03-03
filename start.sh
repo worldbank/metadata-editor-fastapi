@@ -17,29 +17,30 @@ show_help() {
     echo "  --python-version VER   Use specific Python version (e.g., 3.13, 3.12)"
     echo ""
     echo "Environment variables:"
-    echo "  HOST          Server host (default: 0.0.0.0)"
-    echo "  PORT          Server port (default: 8000)"
-    echo "  PYTHON_VERSION Specific Python version to use (e.g., 3.13, 3.12)"
-    echo "  STORAGE_PATH  Path to data storage directory"
+    echo "  HOST             Server host (default: 0.0.0.0)"
+    echo "  PORT             Server port (default: 8000)"
+    echo "  PYTHON_VERSION   Specific Python version to use (e.g., 3.13, 3.12)"
+    echo "  STORAGE_PATH     Path to data storage directory"
+    echo "  CONDA_ENV_NAME   Conda environment name to use (default: metadata-editor)"
     echo ""
-    echo "Python Environment Detection:"
-    echo "  The script will automatically detect and use:"
-    echo "  1. Virtual environment (.venv/) if available"
-    echo "  2. Specific Python version if --python-version is specified"
-    echo "  3. Specific Python version if PYTHON_VERSION environment variable is set"
-    echo "  4. Available system Python versions (3.13, 3.12, 3.11, etc.)"
-    echo "  5. System uvicorn command directly"
+    echo "Python Environment Detection (in priority order):"
+    echo "  1. Conda environment named 'metadata-editor' (or \$CONDA_ENV_NAME)"
+    echo "  2. Currently active conda environment (CONDA_DEFAULT_ENV is set)"
+    echo "  3. Virtual environment (.venv/) if available"
+    echo "  4. Specific Python version if --python-version or PYTHON_VERSION is set"
+    echo "  5. Available system Python versions (3.13, 3.12, 3.11, etc.)"
+    echo "  6. System uvicorn command directly"
     echo ""
     echo "Examples:"
-    echo "  $0                                    # Start with default settings"
-    echo "  HOST=127.0.0.1 $0                    # Start on localhost only"
-    echo "  PORT=8000 $0                         # Start on port 8000"
-    echo "  $0 --python-version 3.13             # Use Python 3.13 specifically"
-    echo "  PYTHON_VERSION=3.13 $0               # Use Python 3.13 via environment"
+    echo "  $0                                       # Start with default settings"
+    echo "  HOST=127.0.0.1 $0                       # Start on localhost only"
+    echo "  PORT=8000 $0                            # Start on port 8000"
+    echo "  CONDA_ENV_NAME=myenv $0                 # Use a custom conda environment"
+    echo "  $0 --python-version 3.13                # Use Python 3.13 specifically"
     echo ""
     echo "Quick Commands:"
-    echo "  $0 --check                           # Run checks only"
-    echo "  $0 --help                            # Show this help"
+    echo "  $0 --check                              # Run checks only"
+    echo "  $0 --help                               # Show this help"
 }
 
 # Colors for output
@@ -61,9 +62,13 @@ DEFAULT_PORT="8000"
 # Python version configuration
 PYTHON_VERSION="${PYTHON_VERSION:-}"  # Allow override via environment variable
 
+# Conda environment name (used when conda is the preferred environment manager)
+CONDA_ENV_NAME="${CONDA_ENV_NAME:-metadata-editor}"
+
 # Detect Python executable
 PYTHON_EXEC=""
 UVICORN_EXEC=""
+ENV_SOURCE=""
 
 # Function to print colored output
 print_status() {
@@ -182,60 +187,102 @@ test_python_executable() {
 
 # Function to detect Python and uvicorn executables
 detect_python_executables() {
-    # Check virtual environment directory first
+    print_status "Detecting Python environment..."
+
+    # --- 1. Named conda environment ---
+    if command -v conda > /dev/null 2>&1; then
+        print_status "Conda found. Checking for environment: $CONDA_ENV_NAME"
+        if conda env list 2>/dev/null | grep -qE "^${CONDA_ENV_NAME}[[:space:]]"; then
+            local conda_python
+            conda_python=$(conda run -n "$CONDA_ENV_NAME" python -c "import sys; print(sys.executable)" 2>/dev/null)
+            if [ -n "$conda_python" ] && "$conda_python" -c "import uvicorn" 2>/dev/null; then
+                PYTHON_EXEC="$conda_python"
+                UVICORN_EXEC="$conda_python -m uvicorn"
+                ENV_SOURCE="conda:$CONDA_ENV_NAME"
+                print_success "Using conda environment '$CONDA_ENV_NAME': $PYTHON_EXEC"
+                return 0
+            else
+                print_warning "Conda env '$CONDA_ENV_NAME' found but uvicorn is not installed in it"
+                print_warning "Run: conda activate $CONDA_ENV_NAME && pip install -r requirements.txt"
+            fi
+        else
+            print_warning "Conda environment '$CONDA_ENV_NAME' not found"
+        fi
+
+        # --- 2. Active conda environment ---
+        if [ -n "${CONDA_DEFAULT_ENV:-}" ]; then
+            print_status "Active conda environment detected: $CONDA_DEFAULT_ENV"
+            local active_python
+            active_python=$(python -c "import sys; print(sys.executable)" 2>/dev/null)
+            if [ -n "$active_python" ] && "$active_python" -c "import uvicorn" 2>/dev/null; then
+                PYTHON_EXEC="$active_python"
+                UVICORN_EXEC="$active_python -m uvicorn"
+                ENV_SOURCE="conda-active:$CONDA_DEFAULT_ENV"
+                print_success "Using active conda environment '$CONDA_DEFAULT_ENV': $PYTHON_EXEC"
+                return 0
+            else
+                print_warning "Active conda env '$CONDA_DEFAULT_ENV' found but uvicorn is not installed"
+            fi
+        fi
+    fi
+
+    # --- 3. Virtual environment (.venv) ---
     if check_venv_directory; then
         PYTHON_EXEC="$VENV_DIR/bin/python"
         UVICORN_EXEC="$VENV_DIR/bin/uvicorn"
+        ENV_SOURCE="venv"
         print_success "Using virtual environment Python: $PYTHON_EXEC"
         return 0
     fi
-    
-    # Get available Python versions
+
+    # --- 4. System Python versions ---
     local python_versions=($(find_python_versions))
-    
+
     if [ ${#python_versions[@]} -eq 0 ]; then
         print_error "No Python executables found"
         return 1
     fi
-    
+
     print_status "Found Python versions: ${python_versions[*]}"
-    
-    # Try each Python version
+
     for python_cmd in "${python_versions[@]}"; do
         print_status "Testing $python_cmd..."
         if test_python_executable "$python_cmd"; then
             PYTHON_EXEC="$python_cmd"
             UVICORN_EXEC="$python_cmd -m uvicorn"
+            ENV_SOURCE="system"
             print_success "Using system Python: $PYTHON_EXEC"
-            
-            # Show Python version info
-            local version_info=$($python_cmd --version 2>&1)
+            local version_info
+            version_info=$($python_cmd --version 2>&1)
             print_status "Python version: $version_info"
             return 0
         else
             print_warning "$python_cmd found but uvicorn not available"
         fi
     done
-    
-    # Try uvicorn directly as last resort
+
+    # --- 5. Uvicorn directly as last resort ---
     if command -v uvicorn > /dev/null 2>&1; then
-        PYTHON_EXEC="python3"  # fallback
+        PYTHON_EXEC="python3"
         UVICORN_EXEC="uvicorn"
+        ENV_SOURCE="system-uvicorn"
         print_success "Using system uvicorn directly"
         return 0
     fi
-    
+
     print_error "Could not find Python with uvicorn installed"
-    print_error "Please either:"
-    print_error "1. Create a virtual environment:"
-    print_error "   python3 -m venv .venv"
-    print_error "   source .venv/bin/activate"
-    print_error "   pip install -r requirements.txt"
+    print_error "Please set up an environment using one of these options:"
     print_error ""
-    print_error "2. Install uvicorn globally:"
-    print_error "   pip3 install uvicorn fastapi"
-    print_error "   # or install all requirements:"
-    print_error "   pip3 install -r requirements.txt"
+    print_error "Option A - Conda (recommended for geospatial support):"
+    print_error "  conda create -n metadata-editor python=3.11 -y"
+    print_error "  conda activate metadata-editor"
+    print_error "  conda install -c conda-forge gdal fiona geopandas rasterio pyproj shapely -y"
+    print_error "  pip install -r requirements.txt"
+    print_error ""
+    print_error "Option B - Virtual environment:"
+    print_error "  python3 -m venv .venv"
+    print_error "  source .venv/bin/activate"
+    print_error "  pip install -r requirements.txt"
     exit 1
 }
 
@@ -299,10 +346,11 @@ start_app() {
     local port="${PORT:-$DEFAULT_PORT}"
     
     print_status "Configuration:"
-    print_status "  Host: $host"
-    print_status "  Port: $port"
-    print_status "  Python: $PYTHON_EXEC"
-    print_status "  Log file: $LOG_FILE"
+    print_status "  Host:        $host"
+    print_status "  Port:        $port"
+    print_status "  Python:      $PYTHON_EXEC"
+    print_status "  Environment: $ENV_SOURCE"
+    print_status "  Log file:    $LOG_FILE"
     
     # Start the application in the background
     nohup $UVICORN_EXEC main:app \

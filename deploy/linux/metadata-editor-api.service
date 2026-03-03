@@ -1,0 +1,68 @@
+# =============================================================
+# metadata-editor-api.service
+#
+# systemd unit file for Metadata Editor FastAPI backend
+#
+# Installation:
+#   See deploy/linux/install-service.sh or README-service.md
+# =============================================================
+
+[Unit]
+Description=Metadata Editor FastAPI Backend (metadata-editor-api)
+After=network.target
+# If you use a database service, add it here, e.g.:
+# After=network.target postgresql.service
+
+[Service]
+# --- Identity ---
+# Run as a dedicated non-root user for security.
+# Create the user first: sudo useradd -r -s /bin/false metadata-editor
+User=metadata-editor
+Group=metadata-editor
+
+# --- Paths ---
+# Set WorkingDirectory to the project root (where main.py lives).
+WorkingDirectory=/opt/metadata-editor
+
+# Full path to the Python executable inside the conda environment.
+# Find yours with: conda run -n metadata-editor python -c "import sys; print(sys.executable)"
+# Common locations:
+#   /home/<user>/miniconda3/envs/metadata-editor/bin/python
+#   /opt/miniconda3/envs/metadata-editor/bin/python
+#   /root/miniconda3/envs/metadata-editor/bin/python  (root installs - not recommended)
+ExecStart=/opt/miniconda3/envs/metadata-editor/bin/python \
+    -m uvicorn main:app \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --log-level info
+
+# --- Environment ---
+# Load variables from the project .env file.
+EnvironmentFile=/opt/metadata-editor/.env
+
+# Ensure conda-forge native libraries (GDAL, PROJ, etc.) are on the library path.
+# Adjust the path to match your miniconda3 installation.
+Environment="LD_LIBRARY_PATH=/opt/miniconda3/envs/metadata-editor/lib"
+
+# --- Restart policy ---
+# Restart the service automatically if it exits unexpectedly.
+Restart=on-failure
+RestartSec=10s
+# Maximum 5 restart attempts within 2 minutes before systemd gives up.
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+# --- Resource limits ---
+# Increase open file limit for high-concurrency workloads.
+LimitNOFILE=65536
+
+# --- Output ---
+# Logs are captured by journald automatically.
+# View with: journalctl -u metadata-editor -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=metadata-editor-api
+
+[Install]
+# Start automatically at boot in the multi-user (non-graphical) target.
+WantedBy=multi-user.target

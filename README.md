@@ -4,31 +4,34 @@ A FastAPI-based RESTful service that processes data files (Stata, SPSS, CSV) to 
 
 ## ✨ Features
 
-- 🔍 Generate **data dictionaries** compatible with **DDI CodeBook 2.5**
-- 📊 Produce **summary statistics** and **frequencies**
-- 🔄 Support for **importing and exporting** data in:
+- Generate **data dictionaries** compatible with **DDI CodeBook 2.5**
+- Produce **summary statistics** and **frequencies**
+- Support for **importing and exporting** data in:
   - **SPSS (.sav)**
   - **Stata (.dta)**
   - **CSV (.csv)**
+- **Geospatial metadata endpoints** (optional – see [Geospatial Installation Guide](README-geospatial.md))
 
-## 🔗 Integration
+## Integration
 
 This service is designed to be used in conjunction with the [Metadata Editor web application](https://github.com/worldbank/metadata-editor), enhancing its ability to automate data processing and metadata generation workflows.
 
 
 ## Requirements
-Python 3.9 or later
+Python 3.11 or later
 
 ## Dependencies
 
 ```
-fastapi==0.109.0
-numpy==1.26.3
-pandas==2.1.4
-pydantic==1.10.7
-pyreadstat==1.2.6
-statsmodels==0.14.1
-uvicorn==0.17.*
+fastapi==0.115.12
+numpy==2.2.4
+pandas==2.2.3
+pydantic==2.11.2
+pydantic-settings==2.8.1
+pydantic_core==2.33.1
+pyreadstat==1.2.8
+statsmodels==0.14.4
+uvicorn==0.34.0
 ```
 
 ## Installation
@@ -53,6 +56,16 @@ pip install -r requirements.txt
 deactivate
 ```
 
+## Geospatial Endpoints (Optional)
+
+Geospatial endpoints require additional native dependencies (GDAL, Fiona, GeoPandas, etc.) that are not included in `requirements.txt`. These can be difficult to install in standard Python environments, especially on Windows.
+
+The recommended approach is to use **Miniconda3** with the `conda-forge` channel, which provides pre-compiled binaries for all platforms.
+
+See the [Geospatial Installation Guide](README-geospatial.md) for full setup instructions.
+
+---
+
 ## Start web app
 
 ### If using Option 1 (Direct Installation):
@@ -70,6 +83,26 @@ python3 -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 # When done, deactivate the virtual environment
 deactivate
+```
+
+### Option 3: Using the start/stop scripts (recommended for background use)
+
+Convenience scripts are provided that start the application as a background process and manage the PID. They auto-detect your Python environment (conda, venv, or system Python).
+
+**macOS / Linux:**
+```bash
+./start.sh        # start in background (auto-detects conda env 'metadata-editor', .venv, or system Python)
+./stop.sh         # stop gracefully
+./stop.sh --force # force kill if graceful stop fails
+./start.sh --help # see all options and environment variables
+```
+
+**Windows:**
+```bat
+start.bat         :: start in background (auto-detects conda env 'metadata-editor', .venv, or system Python)
+stop.bat          :: stop gracefully
+stop.bat --force  :: force kill if graceful stop fails
+start.bat --help  :: see all options
 ```
 
 The application will be available at `http://localhost:8000`
