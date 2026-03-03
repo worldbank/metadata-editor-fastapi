@@ -70,7 +70,7 @@ See the [Geospatial Installation Guide](README-geospatial.md) for full setup ins
 
 ### If using Option 1 (Direct Installation):
 ```bash
-python3 -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
+python3 -m uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
 ### If using Option 2 (Virtual Environment):
@@ -79,7 +79,7 @@ python3 -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
 source venv/bin/activate
 
 # Start the application
-python3 -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
+python3 -m uvicorn main:app --host 0.0.0.0 --port 8000
 
 # When done, deactivate the virtual environment
 deactivate
