@@ -12,31 +12,24 @@ class DataUtils:
     
 
     #
-    def set_wgt_stats_by_value( weightsDict,field,value):
-        
+    def set_wgt_stats_by_value(weightsDict, field, value):
         try:
-
-            if (field not in weightsDict):
-                print ("field not found", field)
+            if field not in weightsDict:
                 return {}
-            
-            print ("field=", field, "value=", value)
-            freq_values = weightsDict[field]['wgt_freq']
 
-            print ("freq_values", freq_values)
+            freq_values = weightsDict[field]["wgt_freq"]
+            # Category can appear in unweighted counts but have no rows with valid weight
+            wgt = freq_values.get(value, 0)
 
-            result={
+            return {
                 "type": "freq",
                 "wgtd": "wgtd",
-                "value": freq_values[value]
+                "value": wgt,
             }
-            
-            return result
 
         except Exception as e:
-            print ("set_wgt_stats_by_value", e)
             traceback.print_exc()
-            raise Exception(e)
+            raise Exception(e) from e
 
         
 

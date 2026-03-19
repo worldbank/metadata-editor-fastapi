@@ -10,13 +10,51 @@ from src.FileInfo import FileInfo
 from src.VarInfo import VarInfo
 from src.DictParams import DictParams
 from src.DataUtils import DataUtils
+from src.DataDictionaryWeightValidation import validate_weight_columns_for_descr_stats
 from statsmodels.stats.weightstats import DescrStatsW
+from fastapi import HTTPException
 from types import SimpleNamespace
 import traceback
 import logging
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+
+def _missing_values_as_list(v):
+    if v is None:
+        return []
+    if isinstance(v, (list, tuple)):
+        return list(v)
+    return [v]
+
+
+def _dtype_spec_declares_numeric(spec) -> bool:
+    """True if client `dtypes` entry means the column should end up numeric."""
+    if spec is None:
+        return False
+    if isinstance(spec, type):
+        if spec is bool:
+            return False
+        return issubclass(spec, (int, float, np.integer, np.floating, np.number))
+    if isinstance(spec, str):
+        s = spec.strip()
+        if s.lower() in ("bool", "boolean", "object", "string", "str", "category"):
+            return False
+        return any(
+            s.startswith(p)
+            for p in (
+                "int",
+                "Int",
+                "uint",
+                "UInt",
+                "float",
+                "Float",
+                "double",
+                "complex",
+            )
+        )
+    return False
 
 
 class DataDictionaryCsv:
@@ -81,7 +119,56 @@ class DataDictionaryCsv:
             logger.error(f"Failed to load CSV file: {error_info}")
             raise Exception(f"Failed to load CSV file {fileinfo.file_path}: {str(e)}") from e
             
-    
+    @staticmethod
+    def _dictionary_usecols(params: DictParams):
+        """Column names to load: var_names plus weight field/weight_field, stable unique order."""
+        if len(params.var_names) == 0:
+            return None
+        cols = list(params.var_names)
+        for w in params.weights:
+            cols.append(str(w.field))
+            cols.append(str(w.weight_field))
+        return list(dict.fromkeys(cols))
+
+    def _numeric_intent_columns(self, params: DictParams) -> set:
+        """Columns that we will coerce for numeric computations.
+
+        Only columns explicitly declared numeric in `params.dtypes` are coerced.
+        If a weight column isn't declared numeric and comes in as non-numeric
+        (object/string), we intentionally fail later in `validate_weight_columns_for_descr_stats`.
+        """
+        names = set()
+        for col, spec in (params.dtypes or {}).items():
+            if _dtype_spec_declares_numeric(spec):
+                names.add(str(col))
+        return names
+
+    def _csv_dtypes_for_read(self, params: DictParams, columns, numeric_intent: set):
+        """
+        Build dtype= for read_csv. Strict numeric specs on numeric-intent columns are deferred
+        (read as str) so tokens that are not valid literals can be turned into NA by
+        pd.to_numeric(..., errors='coerce') after params.missings replacement.
+        """
+        if columns is None:
+            return None
+        dtypes_in = params.dtypes or {}
+        out = {}
+        for c in columns:
+            if c not in dtypes_in:
+                continue
+            spec = dtypes_in[c]
+            if c in numeric_intent:
+                out[c] = str
+            else:
+                out[c] = spec
+        return out if out else None
+
+    def _apply_numeric_intent_normalization(self, df: pd.DataFrame, numeric_intent: set):
+        """After missings replacement: coerce numeric-intent columns; non-numeric tokens → NA."""
+        for col in numeric_intent:
+            if col not in df.columns:
+                continue
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
     def get_data_dictionary_variable(self, params: DictParams):
         """
@@ -102,75 +189,58 @@ class DataDictionaryCsv:
         """
         try:
             logger.debug(f"Starting get_data_dictionary_variable for CSV file: {params}")
-            if (len(params.dtypes) == 0):
-                dtypes=None
-            else:
-                dtypes=params.dtypes
+            columns = self._dictionary_usecols(params)
+            numeric_intent = self._numeric_intent_columns(params)
+            dtypes = self._csv_dtypes_for_read(params, columns, numeric_intent)
 
-            if (len(params.var_names) == 0):
-                columns=None
-            else:
-                columns=list(params.var_names)
-                #weights_list
-                for w in params.weights:
-                    columns.append(str(w.field))
-                    columns.append(str(w.weight_field))
+            df, meta = self.load_file(params, metadataonly=False, usecols=columns, dtypes=dtypes)
 
-            df,meta = self.load_file(params,metadataonly=False,usecols=columns, dtypes=dtypes)            
+            missings_map = params.missings or {}
+            if missings_map:
+                logger.debug(f"Replacing missing values: {missings_map}")
+                df = df.replace(missings_map, np.nan)
 
-            # if missings are defined, replace them with pd.NA
-            if params.missings:
-                logger.debug(f"Replacing missing values: {params.missings}")
-                df = df.replace(params.missings, np.nan)
-
-            # This fillna is redundant since we're already replacing with np.nan
-            #df.fillna(np.nan,inplace=True)
-            
-            # for columns that have missings, try to convert to numeric
-            for col in df.columns:
-                # only apply to columns in params.missings
-                if col not in params.missings:
-                    continue
-                
-                if df[col].dtype == 'object' or pd.api.types.is_string_dtype(df[col]):
-                    # test if column can be converted to numeric
-                    try:
-                        # Check if all non-null values can be converted to numeric
-                        non_null_values = df[col].dropna()
-                        if len(non_null_values) > 0:
-                            # Try converting to numeric - if successful with no NaN introduced, convert
-                            converted = pd.to_numeric(non_null_values, errors='coerce')
-                            # If no values became NaN during conversion, all values are numeric
-                            if converted.notna().sum() == len(non_null_values):
-                                df[col] = pd.to_numeric(df[col], errors='coerce')
-                    except Exception as e:
-                        # If any error occurs, leave column as is
-                        logger.debug(f"Could not convert column {col} to numeric: {str(e)}")
-                        pass
-
-            # Use pandas' best-guess type inference
-            df = df.convert_dtypes()
+            self._apply_numeric_intent_normalization(df, numeric_intent)
 
             variables = []
             for name in meta.column_names:
-                user_missings=[]
-                if params.missings:
-                    for missing_col, missings in params.missings.items():                
+                user_missings = []
+                if missings_map:
+                    for missing_col, missings in missings_map.items():
                         if missing_col == name:
-                            user_missings=missings
-                            break                
-                variables.append(self.variable_summary(df,meta,name,user_missings=user_missings, categorical_list=params.categorical))
+                            user_missings = _missing_values_as_list(missings)
+                            break
+                variables.append(
+                    self.variable_summary(
+                        df, meta, name, user_missings=user_missings, categorical_list=params.categorical
+                    )
+                )
 
             weights = {}
 
-            if len(params.weights) > 0:                
+            if len(params.weights) > 0:
                 for weight in params.weights:
-                    weighted_=self.calc_weighted_mean_n_stddev(df,weight.field, weight.weight_field)
-                    weights[weight.field]={
-                            'wgt_freq': self.calc_weighted_freq(df,weight.field, weight.weight_field),
-                            'wgt_mean': weighted_['mean'],
-                            'wgt_stdev': weighted_['stdev']
-                        }
+                    validate_weight_columns_for_descr_stats(df, weight.field, weight.weight_field)
+                    u_field = _missing_values_as_list(missings_map.get(weight.field))
+                    u_wgt = _missing_values_as_list(missings_map.get(weight.weight_field))
+                    weighted_ = self.calc_weighted_mean_n_stddev(
+                        df,
+                        weight.field,
+                        weight.weight_field,
+                        user_missings=u_field,
+                        weight_missings=u_wgt,
+                    )
+                    weights[weight.field] = {
+                        "wgt_freq": self.calc_weighted_freq(
+                            df,
+                            weight.field,
+                            weight.weight_field,
+                            user_missings=u_field,
+                            weight_missings=u_wgt,
+                        ),
+                        "wgt_mean": weighted_["mean"],
+                        "wgt_stdev": weighted_["stdev"],
+                    }
                         
             #add weights stats to variables
             if weights:
@@ -184,6 +254,8 @@ class DataDictionaryCsv:
             }
             return result
 
+        except HTTPException:
+            raise
         except Exception as e:
             error_info = {
                 "error_type": type(e).__name__,
@@ -217,46 +289,54 @@ class DataDictionaryCsv:
 
 
 
-    def calc_weighted_freq(self, df, col_name, wgt_col_name):
-        result=df.groupby(col_name)[wgt_col_name].sum().to_dict()
+    def calc_weighted_freq(
+        self, df, col_name, wgt_col_name, user_missings=None, weight_missings=None
+    ):
+        new = df[[col_name, wgt_col_name]].copy()
+        u_field = [] if user_missings is None else list(user_missings)
+        u_wgt = [] if weight_missings is None else list(weight_missings)
+        if u_field:
+            new[col_name] = new[col_name].replace(u_field, np.nan)
+        if u_wgt:
+            new[wgt_col_name] = new[wgt_col_name].replace(u_wgt, np.nan)
+        new.dropna(inplace=True)
+        result = new.groupby(col_name)[wgt_col_name].sum().to_dict()
 
-        output={}
+        output = {}
         for val in result:
-            output[int(val)]=int(result[val])
+            output[int(val)] = int(result[val])
 
         return output
 
-    
-    def calc_weighted_mean(self, df,col_name, wgt_col_name,user_missings=list()):
-        #create a copy of df
-        new = df[[col_name,wgt_col_name]].copy()
-
-        #replace user missings with NaN - use proper pandas method
-        new[col_name] = new[col_name].replace(user_missings, np.nan)
-
-        #drop na values
-        new.dropna(subset=[col_name], inplace=True)
-
-        wdf=DescrStatsW(new[col_name],new[wgt_col_name], ddof=1)
-        return wdf.mean
-    
-
-    
-    def calc_weighted_mean_n_stddev(self, df,col_name, wgt_col_name,user_missings=list()):
-        #create a copy of df
-        new = df[[col_name,wgt_col_name]].copy()
-
-        #replace user missings with NaN - use proper pandas method
-        new[col_name] = new[col_name].replace(user_missings, np.nan)
-
-        #drop na values
+    def calc_weighted_mean(
+        self, df, col_name, wgt_col_name, user_missings=None, weight_missings=None
+    ):
+        new = df[[col_name, wgt_col_name]].copy()
+        u_field = [] if user_missings is None else list(user_missings)
+        u_wgt = [] if weight_missings is None else list(weight_missings)
+        if u_field:
+            new[col_name] = new[col_name].replace(u_field, np.nan)
+        if u_wgt:
+            new[wgt_col_name] = new[wgt_col_name].replace(u_wgt, np.nan)
         new.dropna(inplace=True)
 
-        wdf=DescrStatsW(new[col_name],new[wgt_col_name], ddof=1)
-        return {
-            'mean': wdf.mean,
-            'stdev': wdf.std
-        }
+        wdf = DescrStatsW(new[col_name], new[wgt_col_name], ddof=1)
+        return wdf.mean
+
+    def calc_weighted_mean_n_stddev(
+        self, df, col_name, wgt_col_name, user_missings=None, weight_missings=None
+    ):
+        new = df[[col_name, wgt_col_name]].copy()
+        u_field = [] if user_missings is None else list(user_missings)
+        u_wgt = [] if weight_missings is None else list(weight_missings)
+        if u_field:
+            new[col_name] = new[col_name].replace(u_field, np.nan)
+        if u_wgt:
+            new[wgt_col_name] = new[wgt_col_name].replace(u_wgt, np.nan)
+        new.dropna(inplace=True)
+
+        wdf = DescrStatsW(new[col_name], new[wgt_col_name], ddof=1)
+        return {"mean": wdf.mean, "stdev": wdf.std}
         
         
     

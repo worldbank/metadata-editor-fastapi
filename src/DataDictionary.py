@@ -9,11 +9,19 @@ from src.FileInfo import FileInfo
 from src.VarInfo import VarInfo
 from src.DictParams import DictParams
 from src.DataUtils import DataUtils
+from src.DataDictionaryWeightValidation import validate_weight_columns_for_descr_stats
 from statsmodels.stats.weightstats import DescrStatsW
 from fastapi.exceptions import HTTPException
 
 logger = logging.getLogger(__name__)
 
+
+def _missing_values_as_list(v):
+    if v is None:
+        return []
+    if isinstance(v, (list, tuple)):
+        return list(v)
+    return [v]
 
 
 class DataDictionary:
@@ -319,12 +327,12 @@ class DataDictionary:
             variables = []
             try:
                 for name in meta.column_names:
-                    user_missings=[]
+                    user_missings = []
                     if params.missings:
-                        for missing_col, missings in params.missings.items():                
-                                if missing_col == name:
-                                    user_missings=missings
-                                    break
+                        for missing_col, missings in params.missings.items():
+                            if missing_col == name:
+                                user_missings = _missing_values_as_list(missings)
+                                break
                     variables.append(self.variable_summary(df,meta,name,user_missings=user_missings))
             except Exception as e:
                 logger.error(f"Failed to process variables: {str(e)}")
@@ -334,22 +342,36 @@ class DataDictionary:
 
             if len(params.weights) > 0:
                 try:
+                    missings_map = params.missings or {}
                     for weight in params.weights:
-                        # Check if weight fields exist in the data
-                        if weight.field not in df.columns:
-                            raise HTTPException(400, detail=f"Weight field '{weight.field}' not found in data")
-                        if weight.weight_field not in df.columns:
-                            raise HTTPException(400, detail=f"Weight field '{weight.weight_field}' not found in data")
-                        
-                        weighted_=self.calc_weighted_mean_n_stddev(df,weight.field, weight.weight_field)
-                        weights[weight.field]={
-                                'wgt_freq': self.calc_weighted_freq(df,weight.field, weight.weight_field),
-                                'wgt_mean': weighted_['mean'],
-                                'wgt_stdev': weighted_['stdev']
-                            }
+                        validate_weight_columns_for_descr_stats(
+                            df, weight.field, weight.weight_field
+                        )
+                        u_field = _missing_values_as_list(missings_map.get(weight.field))
+                        u_wgt = _missing_values_as_list(missings_map.get(weight.weight_field))
+                        weighted_ = self.calc_weighted_mean_n_stddev(
+                            df,
+                            weight.field,
+                            weight.weight_field,
+                            user_missings=u_field,
+                            weight_missings=u_wgt,
+                        )
+                        weights[weight.field] = {
+                            "wgt_freq": self.calc_weighted_freq(
+                                df,
+                                weight.field,
+                                weight.weight_field,
+                                user_missings=u_field,
+                                weight_missings=u_wgt,
+                            ),
+                            "wgt_mean": weighted_["mean"],
+                            "wgt_stdev": weighted_["stdev"],
+                        }
 
                     #add weights stats to variables
                     self.apply_weighted_freq_to_variables(variables, weights)
+                except HTTPException:
+                    raise
                 except Exception as e:
                     raise HTTPException(500, detail=f"Failed to calculate weights: {str(e)}")
                 
@@ -381,46 +403,54 @@ class DataDictionary:
 
 
 
-    def calc_weighted_freq(self, df, col_name, wgt_col_name):
-        result=df.groupby(col_name)[wgt_col_name].sum().to_dict()
+    def calc_weighted_freq(
+        self, df, col_name, wgt_col_name, user_missings=None, weight_missings=None
+    ):
+        new = df[[col_name, wgt_col_name]].copy()
+        u_field = [] if user_missings is None else list(user_missings)
+        u_wgt = [] if weight_missings is None else list(weight_missings)
+        if u_field:
+            new[col_name] = new[col_name].replace(u_field, np.nan)
+        if u_wgt:
+            new[wgt_col_name] = new[wgt_col_name].replace(u_wgt, np.nan)
+        new.dropna(inplace=True)
+        result = new.groupby(col_name)[wgt_col_name].sum().to_dict()
 
-        output={}
+        output = {}
         for val in result:
-            output[int(val)]=int(result[val])
+            output[int(val)] = int(result[val])
 
         return output
 
-    
-    def calc_weighted_mean(self, df,col_name, wgt_col_name,user_missings=list()):
-        #create a copy of df
-        new = df[[col_name,wgt_col_name]].copy()
-
-        #replace user missings with NaN
-        new[col_name]=df[col_name].replace(user_missings, np.nan)
-
-        #drop na values
-        new.dropna(subset=[col_name], inplace=True)
-
-        wdf=DescrStatsW(new[col_name],new[wgt_col_name], ddof=1)
-        return wdf.mean
-    
-    
-    def calc_weighted_mean_n_stddev(self, df,col_name, wgt_col_name,user_missings=list()):
-        #create a copy of df
-        new = df[[col_name,wgt_col_name]].copy()
-
-        #replace user missings with NaN
-        new[col_name]=df[col_name].replace(user_missings, np.nan)
-
-        #drop na values
-        #new.dropna(subset=[col_name], inplace=True)
+    def calc_weighted_mean(
+        self, df, col_name, wgt_col_name, user_missings=None, weight_missings=None
+    ):
+        new = df[[col_name, wgt_col_name]].copy()
+        u_field = [] if user_missings is None else list(user_missings)
+        u_wgt = [] if weight_missings is None else list(weight_missings)
+        if u_field:
+            new[col_name] = new[col_name].replace(u_field, np.nan)
+        if u_wgt:
+            new[wgt_col_name] = new[wgt_col_name].replace(u_wgt, np.nan)
         new.dropna(inplace=True)
 
-        wdf=DescrStatsW(new[col_name],new[wgt_col_name], ddof=1)
-        return {
-            'mean': wdf.mean,
-            'stdev': wdf.std
-        }
+        wdf = DescrStatsW(new[col_name], new[wgt_col_name], ddof=1)
+        return wdf.mean
+
+    def calc_weighted_mean_n_stddev(
+        self, df, col_name, wgt_col_name, user_missings=None, weight_missings=None
+    ):
+        new = df[[col_name, wgt_col_name]].copy()
+        u_field = [] if user_missings is None else list(user_missings)
+        u_wgt = [] if weight_missings is None else list(weight_missings)
+        if u_field:
+            new[col_name] = new[col_name].replace(u_field, np.nan)
+        if u_wgt:
+            new[wgt_col_name] = new[wgt_col_name].replace(u_wgt, np.nan)
+        new.dropna(inplace=True)
+
+        wdf = DescrStatsW(new[col_name], new[wgt_col_name], ddof=1)
+        return {"mean": wdf.mean, "stdev": wdf.std}
         
         
     
