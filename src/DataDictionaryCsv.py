@@ -11,6 +11,7 @@ from src.VarInfo import VarInfo
 from src.DictParams import DictParams
 from src.DataUtils import DataUtils
 from src.DataDictionaryWeightValidation import validate_weight_columns_for_descr_stats
+from src.weighted_freq_key import weighted_freq_category_key
 from statsmodels.stats.weightstats import DescrStatsW
 from fastapi import HTTPException
 from types import SimpleNamespace
@@ -282,8 +283,12 @@ class DataDictionaryCsv:
                     if ('is_missing' in var_catgry):
                         logger.warning(f"Skipping variable with category is_missing: {var_catgry}")
                         raise Exception("is_missing not supported")
-                    var_catgry['stats'].append(
-                        DataUtils.set_wgt_stats_by_value(weights_obj,field=variable['name'],value=int(var_catgry['value']))
+
+                    val_raw = var_catgry.get("value")
+                    var_catgry["stats"].append(
+                        DataUtils.set_wgt_stats_by_value(
+                            weights_obj, field=variable["name"], value=val_raw
+                        )
                     )
 
 
@@ -304,7 +309,9 @@ class DataDictionaryCsv:
 
         output = {}
         for val in result:
-            output[int(val)] = int(result[val])
+            k = weighted_freq_category_key(val)
+            raw = float(result[val])
+            output[k] = int(round(raw)) if abs(raw - round(raw)) < 1e-9 else raw
 
         return output
 

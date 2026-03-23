@@ -1,5 +1,9 @@
 import traceback
 
+from fastapi import HTTPException
+
+from src.weighted_freq_key import weighted_freq_category_key
+
 
 class DataUtils:
             
@@ -18,8 +22,8 @@ class DataUtils:
                 return {}
 
             freq_values = weightsDict[field]["wgt_freq"]
-            # Category can appear in unweighted counts but have no rows with valid weight
-            wgt = freq_values.get(value, 0)
+            key = weighted_freq_category_key(value)
+            wgt = freq_values.get(key, 0)
 
             return {
                 "type": "freq",
@@ -27,6 +31,8 @@ class DataUtils:
                 "value": wgt,
             }
 
+        except HTTPException:
+            raise
         except Exception as e:
             traceback.print_exc()
             raise Exception(e) from e
