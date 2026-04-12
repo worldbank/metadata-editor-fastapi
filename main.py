@@ -10,6 +10,7 @@ from src.DataDictionary import DataDictionary
 from src.DataDictionaryCsv import DataDictionaryCsv
 from src.ExportDatafile import ExportDatafile
 from src.routers.geospatial import router as geospatial_router
+from src.routers.timeseries import router as timeseries_router
 from src.version import get_version
 import re
 import pandas as pd
@@ -190,6 +191,8 @@ app.jobs = {}
 
 # Include geospatial router
 app.include_router(geospatial_router)
+# Include timeseries router
+app.include_router(timeseries_router)
 
 # Cleanup metrics
 class CleanupMetrics:
@@ -816,13 +819,21 @@ async def write_data_dictionary_file(jobid, params: DictParams):
             json.dump(result, outfile)
         
         return {"status": "success", "file_path": file_path}
-    
-    except Exception as e:
-        import traceback
+
+    except HTTPException as e:
         app.jobs[jobid]["status"]="error"
-        app.jobs[jobid]["error"]=str(e)
+        detail = e.detail
+        err_msg = detail if isinstance(detail, str) else str(detail)
+        app.jobs[jobid]["error"] = err_msg
         app.jobs[jobid]["completed_at"] = datetime.datetime.now().isoformat()
-        app.jobs[jobid]["traceback"]=traceback.format_exc()
+        app.jobs[jobid]["traceback"] = traceback.format_exc()
+        return {"status": "error", "error": err_msg}
+
+    except Exception as e:
+        app.jobs[jobid]["status"]="error"
+        app.jobs[jobid]["error"] = str(e)
+        app.jobs[jobid]["completed_at"] = datetime.datetime.now().isoformat()
+        app.jobs[jobid]["traceback"] = traceback.format_exc()
         return {"status": "error", "error": str(e)}
 
 
@@ -911,6 +922,7 @@ async def export_data_file(jobid, params: DictParams):
                 "dtypes": params.dtypes,
                 "value_labels": params.value_labels,
                 "export_format": params.export_format,
+                "export_options": params.export_options,
             },
         }
 
@@ -1004,6 +1016,13 @@ async def process_microdata_file(jobid, params: DataProcessingParams):
                 
                 logger.debug(f"Job {jobid}: Data dictionary generation completed")
                 
+            except HTTPException as e:
+                detail = e.detail
+                err_detail = detail if isinstance(detail, str) else str(detail)
+                error_msg = f"Data dictionary generation failed: {err_detail}"
+                logger.error(f"Job {jobid}: {error_msg}")
+                results["data_dictionary"] = {"status": "error", "error": error_msg}
+                results["processing_steps"].append("data_dictionary_failed")
             except Exception as e:
                 error_msg = f"Data dictionary generation failed: {str(e)}"
                 logger.error(f"Job {jobid}: {error_msg}")

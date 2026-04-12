@@ -8,3 +8,4 @@ pyreadstat==1.2.8
 statsmodels==0.14.4
 uvicorn==0.34.0
 python-dotenv
+duckdb
