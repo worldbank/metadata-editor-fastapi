@@ -525,15 +525,9 @@ class DataDictionaryCsv:
         is_categorical=False
         categories=[]
         categories_calc=[]
-        numeric_columns=df.select_dtypes('int').columns
 
         # Check if variable is explicitly set as categorical by user
         is_user_categorical = variable_name in categorical_list
-
-        # Skip processing if not numeric and not user-defined categorical
-        if not is_user_categorical and variable_name not in numeric_columns:
-            logger.debug(f"Variable {variable_name} not numeric and not user-defined categorical, skipping categorical calculation")
-            return []
 
         #get value counts [freq] by each unique value
         categories_calc=df[variable_name].value_counts()
@@ -552,21 +546,10 @@ class DataDictionaryCsv:
             is_categorical=True
             logger.debug(f"Variable {variable_name} is user-defined categorical with {categories_calc.count()} categories")
         else:
-            #guess if variable is categorical
-            #too many categories
-            if (categories_calc.count() > max_freq):
-                #not a categorical variable
-                logger.debug(f"Variable {variable_name} has too many categories ({categories_calc.count()}), not categorical")
-                return []
-
-            # check value data type for non-integer values (only for non-user-defined categorical)
-            for cat,freq in categories_calc.items():
-                if (cat==''):
-                    continue
-                
-                if (cat!=int(cat)):
-                    logger.debug(f"Variable {variable_name} has non-integer values, not categorical")
-                    return []
+            logger.debug(
+                f"Variable {variable_name} has no value labels and is not user-defined categorical, skipping categorical calculation"
+            )
+            return []
 
         output=[]
 

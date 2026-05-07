@@ -334,7 +334,15 @@ class DataDictionary:
                             if missing_col == name:
                                 user_missings = _missing_values_as_list(missings)
                                 break
-                    variables.append(self.variable_summary(df,meta,name,user_missings=user_missings))
+                    variables.append(
+                        self.variable_summary(
+                            df,
+                            meta,
+                            name,
+                            user_missings=user_missings,
+                            categorical_list=params.categorical,
+                        )
+                    )
             except Exception as e:
                 logger.error(f"Failed to process variables: {str(e)}")
                 raise HTTPException(500, detail=f"Failed to process variables: {str(e)}")
@@ -672,7 +680,9 @@ class DataDictionary:
 
 
 
-    def variable_categories_calculated(self, df,meta,variable_name, max_freq=100, user_missings=list()):
+    def variable_categories_calculated(
+        self, df,meta,variable_name, max_freq=100, user_missings=list(), categorical_list=list()
+    ):
         
         is_categorical=False
         categories=[]
@@ -694,25 +704,12 @@ class DataDictionary:
             is_categorical=True    
             categories=meta.variable_value_labels[variable_name]
         else:
-            # Only check numeric columns if no value labels exist
-            numeric_columns=df.select_dtypes(include=['int']).columns
-            
-            if (variable_name not in numeric_columns):
+            # Strict opt-in when value labels are not present.
+            if variable_name not in categorical_list:
                 return []
-
-            #guess if variable is categorical
-            #too many categories
-            if (categories_calc.count() > max_freq):
-                #not a categorical variable
-                return []
-
-            # check value data type for non-integer values
-            for cat,freq in categories_calc.items():
-                if (cat==''):
-                    continue
-                
-                if (cat!=int(cat)):
-                    return []
+            # Keep a guardrail for high-cardinality user-selected categorical fields.
+            if (categories_calc.count() > 1000):
+                categories_calc = categories_calc.head(1000)
 
         output=[]
 
@@ -762,9 +759,11 @@ class DataDictionary:
         return output
 
 
-    def variable_summary(self, df,meta,variable_name, user_missings=list()):
+    def variable_summary(self, df,meta,variable_name, user_missings=list(), categorical_list=list()):
         """Return a dictionary of summary statistics for a variable in a dataframe"""        
-        variable_categories=self.variable_categories_calculated(df,meta,variable_name, user_missings=user_missings)
+        variable_categories=self.variable_categories_calculated(
+            df,meta,variable_name, user_missings=user_missings, categorical_list=categorical_list
+        )
         variable_has_categories=False
 
         if (variable_categories):
