@@ -20,7 +20,10 @@ from ..models.timeseries_models import (
 	IndicatorObservationKeyValidateResponse,
 	IndicatorFacetValueCountsRequest,
 	IndicatorFacetValueCountsResponse,
+	CsvDistinctQueryResponse,
+	CsvHeadersValidateResponse,
 	IndicatorPromoteRequest,
+	IndicatorReplaceFromCsvRequest,
 	IndicatorTimeseriesImportRequest,
 	PromoteTimeSpec,
 	RecomputeTimeDerivedRequest,
@@ -59,6 +62,7 @@ from ..utils.timeseries_utils import (
 	quote_identifier,
 	resolve_column_name_case_insensitive,
 	validate_csv_field_names,
+	validate_csv_headers_exact_set,
 	validate_dsd_columns_in_csv_headers,
 )
 from ..utils.timeseries_ts_derived import (
@@ -224,6 +228,122 @@ async def _enqueue_indicator_promote(
 	)
 
 
+async def _enqueue_replace_from_csv(
+	jobid: str,
+	request: IndicatorReplaceFromCsvRequest,
+	service: TimeseriesService,
+) -> TimeseriesJobResponse:
+	from main import app
+
+	current_time = datetime.datetime.now().isoformat()
+	job_info = {
+		"jobid": jobid,
+		"jobtype": "indicator-replace-from-csv",
+		"status": "queued",
+		"created_at": current_time,
+		"completed_at": None,
+		"last_accessed": current_time,
+		"info": request.model_dump(),
+	}
+	app.jobs[jobid] = job_info
+
+	callback = functools.partial(
+		process_replace_from_csv_job,
+		jobid,
+		request,
+		service,
+	)
+	await app.fifo_queue.put(callback)
+
+	logger.info(
+		"Queued replace-from-csv job %s for project %s",
+		jobid,
+		request.project_id,
+	)
+
+	return TimeseriesJobResponse(
+		message="Replace project timeseries from CSV is queued",
+		job_id=jobid,
+		operation_type="indicator-replace-from-csv",
+		project_id=request.project_id,
+	)
+
+
+def _drop_staging_table(conn, schema_name: str) -> bool:
+	qual_st = f"{quote_identifier(schema_name)}.{quote_identifier(STAGING_TABLE_NAME)}"
+	exists = conn.execute(
+		"""
+		SELECT 1
+		FROM information_schema.tables
+		WHERE table_schema = ? AND table_name = ?
+		""",
+		[schema_name, STAGING_TABLE_NAME],
+	).fetchone()
+	if not exists:
+		return False
+	conn.execute(f"DROP TABLE {qual_st}")
+	return True
+
+
+def _drop_timeseries_table(conn, schema_name: str) -> bool:
+	qual_ts = f"{quote_identifier(schema_name)}.{quote_identifier(TIMESERIES_TABLE_NAME)}"
+	if not _timeseries_table_exists(conn, schema_name):
+		return False
+	conn.execute(f"DROP TABLE {qual_ts}")
+	return True
+
+
+def _csv_distinct_from_path(
+	csv_path: str,
+	delimiter: str,
+	column: str,
+	limit: int = 3000,
+) -> tuple[str, List[StagingDistinctValueCount], int, bool]:
+	"""Distinct string values for one column via read_csv_auto (no staging table)."""
+	headers = _read_csv_headers_or_raise(csv_path, delimiter)
+	resolved = resolve_column_name_case_insensitive(column, headers)
+	if not resolved:
+		raise HTTPException(
+			status_code=400,
+			detail=f"Column not found in CSV header: {column}",
+		)
+
+	escaped = escape_sql_string(csv_path)
+	delim = delimiter.replace("'", "''")
+	qcol = quote_identifier(resolved)
+	limit = max(1, min(int(limit), 3000))
+
+	with duckdb.connect(":memory:") as conn:
+		count_row = conn.execute(
+			f"SELECT COUNT(*) FROM read_csv_auto('{escaped}', delim='{delim}', header=true, all_varchar=true)"
+		).fetchone()
+		csv_row_count = int(count_row[0]) if count_row else 0
+
+		rows = conn.execute(
+			f"""
+			SELECT CAST({qcol} AS VARCHAR) AS v, COUNT(*) AS c
+			FROM read_csv_auto('{escaped}', delim='{delim}', header=true, all_varchar=true)
+			WHERE {qcol} IS NOT NULL AND TRIM(CAST({qcol} AS VARCHAR)) <> ''
+			GROUP BY 1
+			ORDER BY c DESC, v ASC
+			LIMIT ?
+			""",
+			[limit + 1],
+		).fetchall()
+
+	truncated = len(rows) > limit
+	if truncated:
+		rows = rows[:limit]
+
+	items = [
+		StagingDistinctValueCount(value=str(r[0]), count=int(r[1]))
+		for r in rows
+		if r[0] is not None
+	]
+
+	return resolved, items, csv_row_count, truncated
+
+
 def _create_timeseries_from_staging(
 	conn,
 	schema_name: str,
@@ -379,7 +499,7 @@ def _duckdb_import_csv_table(
 			f"{escaped_path}"
 			"', delim='"
 			f"{delimiter}"
-			"', header=true"
+			"', header=true, all_varchar=true"
 			")"
 		)
 		conn.execute(create_sql)
@@ -916,6 +1036,91 @@ async def indicator_staging_drop(
 		conn.execute(f"DROP TABLE {qual}")
 
 	return StagingDropResponse(project_id=project_id, dropped=True)
+
+
+@router.get("/indicators/csv/distinct", response_model=CsvDistinctQueryResponse)
+async def indicator_csv_distinct(
+	project_id: str = Query(..., description="Editor sid"),
+	csv_path: str = Query(..., description="Absolute path to CSV on this host"),
+	column: str = Query(..., min_length=1, description="Column name (indicator_id)"),
+	delimiter: str = Query(",", min_length=1, max_length=1),
+	limit: int = Query(3000, ge=1, le=3000),
+):
+	"""
+	Distinct non-null values in a CSV column without loading staging.
+	Used for the indicator_id picker before replace import.
+	"""
+	if not project_id.isdigit():
+		raise HTTPException(status_code=400, detail="project_id must be numeric")
+	if not os.path.isfile(csv_path):
+		raise HTTPException(status_code=400, detail=f"CSV file not found: {csv_path}")
+
+	resolved, items, csv_row_count, truncated = _csv_distinct_from_path(
+		csv_path, delimiter, column, limit
+	)
+
+	return CsvDistinctQueryResponse(
+		project_id=project_id,
+		column_resolved=resolved,
+		values=[i.value for i in items],
+		items=items,
+		truncated=truncated,
+		csv_row_count=csv_row_count,
+	)
+
+
+@router.get("/indicators/csv/validate-headers", response_model=CsvHeadersValidateResponse)
+async def indicator_csv_validate_headers(
+	project_id: str = Query(..., description="Editor sid"),
+	csv_path: str = Query(..., description="Absolute path to CSV on this host"),
+	expected_columns: str = Query(
+		...,
+		description="Comma-separated DSD column names (must match CSV header set exactly)",
+	),
+	delimiter: str = Query(",", min_length=1, max_length=1),
+):
+	"""Validate CSV header row against expected DSD columns (exact set, case-insensitive)."""
+	if not project_id.isdigit():
+		raise HTTPException(status_code=400, detail="project_id must be numeric")
+	if not os.path.isfile(csv_path):
+		raise HTTPException(status_code=400, detail=f"CSV file not found: {csv_path}")
+
+	headers = _read_csv_headers_or_raise(csv_path, delimiter)
+	names = [n.strip() for n in expected_columns.split(",") if n.strip()]
+	ok, msg, missing, extra = validate_csv_headers_exact_set(headers, names)
+
+	return CsvHeadersValidateResponse(
+		project_id=project_id,
+		valid=ok,
+		message=msg,
+		missing_in_csv=missing,
+		extra_in_csv=extra,
+		csv_headers=headers,
+	)
+
+
+@router.post("/indicators/timeseries/replace-from-csv-queue", response_model=TimeseriesJobResponse)
+async def indicator_replace_from_csv_queue(
+	request: IndicatorReplaceFromCsvRequest,
+	service: TimeseriesService = Depends(get_timeseries_service),
+):
+	"""
+	Validate CSV headers, replace project timeseries from rows matching indicator_value.
+	Uses staging only inside the job; staging is dropped on success or failure.
+	"""
+	if not request.project_id.isdigit():
+		raise HTTPException(status_code=400, detail="project_id must be numeric")
+	if not os.path.isfile(request.csv_path):
+		raise HTTPException(status_code=400, detail=f"CSV file not found: {request.csv_path}")
+
+	headers = _read_csv_headers_or_raise(request.csv_path, request.delimiter)
+	names = [c.name for c in request.expected_columns]
+	ok, msg, _, _ = validate_csv_headers_exact_set(headers, names)
+	if not ok:
+		raise HTTPException(status_code=400, detail=msg or "CSV headers do not match DSD columns")
+
+	jobid = f"indicator-replace-csv-{int(time.time() * 1000)}"
+	return await _enqueue_replace_from_csv(jobid, request, service)
 
 
 @router.delete("/indicators/timeseries", response_model=TimeseriesDropResponse)
@@ -1596,7 +1801,7 @@ async def indicator_timeseries_chart_aggregate(
 				elif name.startswith("dim_"):
 					idx = int(name.split("_", 1)[1])
 					sc = slice_resolved[idx]
-					sval = val if val is None else str(val)
+					sval = "" if val is None else str(val)
 					dims[sc] = sval
 			if dims:
 				rec["series_key"] = " | ".join(dims[c] for c in slice_resolved if c in dims)
@@ -2065,6 +2270,110 @@ async def process_recompute_time_derived_job(
 		app.jobs[jobid]["error"] = str(e)
 		app.jobs[jobid]["error_details"] = {
 			"function": "process_recompute_time_derived_job",
+			"jobid": jobid,
+			"traceback": traceback.format_exc(),
+		}
+		app.jobs[jobid]["completed_at"] = datetime.datetime.now().isoformat()
+
+
+async def process_replace_from_csv_job(
+	jobid: str,
+	request: IndicatorReplaceFromCsvRequest,
+	service: TimeseriesService,
+):
+	from main import app
+
+	app.jobs[jobid]["status"] = "processing"
+	db_path = service.get_db_path()
+	schema_name = build_project_schema_name(request.project_id)
+
+	try:
+		headers = _read_csv_headers_or_raise(request.csv_path, request.delimiter)
+		names = [c.name for c in request.expected_columns]
+		ok, msg, _, _ = validate_csv_headers_exact_set(headers, names)
+		if not ok:
+			raise ValueError(msg or "CSV headers do not match DSD columns")
+
+		with duckdb.connect(db_path) as conn:
+			conn.execute(f"CREATE SCHEMA IF NOT EXISTS {quote_identifier(schema_name)}")
+			_drop_timeseries_table(conn, schema_name)
+			_drop_staging_table(conn, schema_name)
+
+		_duckdb_import_csv_table(
+			db_path,
+			request.project_id,
+			request.csv_path,
+			request.delimiter,
+			True,
+			STAGING_TABLE_NAME,
+		)
+
+		qual_st = f"{quote_identifier(schema_name)}.{quote_identifier(STAGING_TABLE_NAME)}"
+		qual_ts = f"{quote_identifier(schema_name)}.{quote_identifier(TIMESERIES_TABLE_NAME)}"
+
+		with duckdb.connect(db_path) as conn:
+			col_rows = fetch_table_column_rows(conn, schema_name, STAGING_TABLE_NAME)
+			col_names = [r[0] for r in col_rows]
+			resolved = resolve_column_name_case_insensitive(
+				request.indicator_column, col_names
+			)
+			if not resolved:
+				raise ValueError(
+					f"Column not found in CSV: {request.indicator_column}"
+				)
+
+			_create_timeseries_from_staging(
+				conn,
+				schema_name,
+				qual_st,
+				qual_ts,
+				resolved,
+				str(request.indicator_value),
+				request.time_spec,
+			)
+
+			row_count = int(conn.execute(f"SELECT COUNT(*) FROM {qual_ts}").fetchone()[0])
+			staging_dropped = _drop_staging_table(conn, schema_name)
+
+		result = {
+			"project_id": request.project_id,
+			"row_count": row_count,
+			"indicator_column_resolved": resolved,
+			"indicator_value": request.indicator_value,
+			"staging_dropped": staging_dropped,
+		}
+
+		app.jobs[jobid]["status"] = "done"
+		app.jobs[jobid]["completed_at"] = datetime.datetime.now().isoformat()
+
+		os.makedirs("jobs", exist_ok=True)
+		with open(os.path.join("jobs", f"{jobid}.json"), "w") as outfile:
+			json.dump(result, outfile)
+
+		logger.info(
+			"Replace-from-csv job %s completed: %s rows",
+			jobid,
+			row_count,
+		)
+
+	except Exception as e:
+		logger.error("Replace-from-csv job %s failed: %s", jobid, str(e))
+		try:
+			with duckdb.connect(db_path) as conn:
+				conn.execute(f"CREATE SCHEMA IF NOT EXISTS {quote_identifier(schema_name)}")
+				_drop_timeseries_table(conn, schema_name)
+				_drop_staging_table(conn, schema_name)
+		except Exception as cleanup_err:
+			logger.warning(
+				"Replace-from-csv cleanup failed for %s: %s",
+				jobid,
+				cleanup_err,
+			)
+
+		app.jobs[jobid]["status"] = "error"
+		app.jobs[jobid]["error"] = str(e)
+		app.jobs[jobid]["error_details"] = {
+			"function": "process_replace_from_csv_job",
 			"jobid": jobid,
 			"traceback": traceback.format_exc(),
 		}

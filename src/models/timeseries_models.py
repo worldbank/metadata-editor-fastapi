@@ -65,6 +65,74 @@ class PromoteTimeSpec(BaseModel):
 	global_freq_codelist_id: Optional[int] = Field(None, description="Reserved for future validation")
 
 
+class StagingDistinctValueCount(BaseModel):
+	"""One distinct indicator code and its row count in staging."""
+
+	value: str = Field(..., description="Cast to string; matches promote filter")
+	count: int = Field(..., ge=0, description="Rows in staging with this value")
+
+
+class CsvDistinctQueryResponse(BaseModel):
+	"""Distinct values in a CSV column (no staging table)."""
+
+	project_id: str
+	column_resolved: str
+	values: List[str] = Field(default_factory=list)
+	items: List[StagingDistinctValueCount] = Field(default_factory=list)
+	truncated: bool = False
+	csv_row_count: int = 0
+
+
+class CsvHeadersValidateResponse(BaseModel):
+	"""Result of comparing CSV headers to expected DSD column names (exact set)."""
+
+	project_id: str
+	valid: bool
+	message: str = ""
+	missing_in_csv: List[str] = Field(default_factory=list)
+	extra_in_csv: List[str] = Field(default_factory=list)
+	csv_headers: List[str] = Field(default_factory=list)
+
+
+class IndicatorReplaceFromCsvRequest(BaseModel):
+	"""
+	Validate CSV headers, replace project timeseries from CSV rows matching indicator_value.
+
+	Uses a short-lived staging load internally; staging is dropped when the job completes.
+	"""
+
+	project_id: str = Field(..., description="Same as editor sid (numeric string)")
+	csv_path: str = Field(..., description="Absolute path to CSV on this host")
+	delimiter: str = Field(",", min_length=1, max_length=1)
+	expected_columns: List[DsdColumnRef] = Field(
+		...,
+		min_length=1,
+		description="DSD column names; CSV header set must match exactly (case-insensitive)",
+	)
+	indicator_column: str = Field(
+		...,
+		min_length=1,
+		max_length=255,
+		description="Physical indicator_id column name in CSV",
+	)
+	indicator_value: str = Field(
+		...,
+		description="Only rows with this indicator id are loaded into timeseries",
+	)
+	time_spec: Optional[PromoteTimeSpec] = Field(
+		None,
+		description="When set, timeseries includes _ts_year and _ts_freq",
+	)
+
+
+class IndicatorReplaceFromCsvResult(BaseModel):
+	project_id: str
+	row_count: int
+	indicator_column_resolved: str
+	indicator_value: str
+	staging_dropped: bool = True
+
+
 class IndicatorPromoteRequest(BaseModel):
 	"""Copy rows from staging into timeseries where indicator_column = indicator_value (replace timeseries)."""
 
@@ -90,13 +158,6 @@ class RecomputeTimeDerivedRequest(BaseModel):
 
 	project_id: str = Field(..., description="Same as editor sid (numeric string)")
 	time_spec: PromoteTimeSpec = Field(..., description="Full spec; time_column must exist on timeseries")
-
-
-class StagingDistinctValueCount(BaseModel):
-	"""One distinct indicator code and its row count in staging."""
-
-	value: str = Field(..., description="Cast to string; matches promote filter")
-	count: int = Field(..., ge=0, description="Rows in staging with this value")
 
 
 class StagingDistinctResponse(BaseModel):

@@ -87,6 +87,42 @@ def validate_dsd_columns_in_csv_headers(
 	return True, ""
 
 
+def validate_csv_headers_exact_set(
+	headers: List[str],
+	expected_dsd_names: List[str],
+) -> tuple[bool, str, List[str], List[str]]:
+	"""
+	Require CSV header set to match DSD column names exactly (case-insensitive).
+
+	Returns (ok, message, missing_in_csv, extra_in_csv).
+	"""
+	expected_keys: set[str] = set()
+	for raw in expected_dsd_names:
+		key = normalize_dsd_column_name(raw)
+		if not key:
+			return False, "DSD column name is empty", [], []
+		expected_keys.add(key)
+
+	header_keys: set[str] = set()
+	for h in headers:
+		key = normalize_dsd_column_name(str(h))
+		if key:
+			header_keys.add(key)
+
+	missing = sorted(expected_keys - header_keys)
+	extra = sorted(header_keys - expected_keys)
+
+	if missing or extra:
+		parts: List[str] = []
+		if missing:
+			parts.append("missing in CSV: " + ", ".join(missing[:15]))
+		if extra:
+			parts.append("extra in CSV: " + ", ".join(extra[:15]))
+		return False, "; ".join(parts), missing, extra
+
+	return True, "", [], []
+
+
 def sanitize_identifier(value: str, default: str) -> str:
     cleaned = re.sub(r"[^0-9a-zA-Z_]+", "_", value or "").strip("_").lower()
     if not cleaned:
