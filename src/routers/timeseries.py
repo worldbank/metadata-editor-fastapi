@@ -66,6 +66,7 @@ from ..utils.timeseries_utils import (
 	validate_dsd_columns_in_csv_headers,
 )
 from ..utils.timeseries_ts_derived import (
+	assert_staging_time_period_matches_implied_freq,
 	build_derived_expressions,
 	fetch_table_column_names_ordered,
 	filter_user_columns,
@@ -2181,6 +2182,16 @@ async def process_indicator_promote_job(
 			if not resolved:
 				raise ValueError(f"Column not found in staging: {request.indicator_column}")
 
+			assert_staging_time_period_matches_implied_freq(
+				conn,
+				schema_name,
+				STAGING_TABLE_NAME,
+				qual_st,
+				request.time_spec,
+				resolved,
+				str(request.indicator_value),
+			)
+
 			_create_timeseries_from_staging(
 				conn,
 				schema_name,
@@ -2321,6 +2332,16 @@ async def process_replace_from_csv_job(
 				raise ValueError(
 					f"Column not found in CSV: {request.indicator_column}"
 				)
+
+			assert_staging_time_period_matches_implied_freq(
+				conn,
+				schema_name,
+				STAGING_TABLE_NAME,
+				qual_st,
+				request.time_spec,
+				resolved,
+				str(request.indicator_value),
+			)
 
 			_create_timeseries_from_staging(
 				conn,

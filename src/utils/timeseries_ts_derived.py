@@ -11,6 +11,18 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .timeseries_utils import escape_sql_string, quote_identifier, resolve_column_name_case_insensitive
 
+FREQ_TIME_PERIOD_REGEX: Dict[str, str] = {
+	"A": r"^\d{4}$",
+	"A2": r"^\d{4}$",  # biennial;
+	"S": r"^\d{4}-S[12]$",
+	"Q": r"^\d{4}-Q[1-4]$",
+	"M": r"^\d{4}-(0[1-9]|1[0-2])$",
+	"W": r"^\d{4}-W\d{2}$",
+	"D": r"^\d{4}-\d{2}-\d{2}$",
+	"H": r"^\d{4}-\d{2}-\d{2}T\d{2}$",
+	"I": r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}",
+}
+
 
 def fetch_table_column_names_ordered(conn, schema_name: str, table_name: str) -> List[str]:
 	"""Physical column order (ordinal_position when available)."""
@@ -132,3 +144,72 @@ def validate_and_resolve_time_spec(
 			raise ValueError(f"time_spec.freq_column not found in table: {fc}")
 
 	return raw, resolved_time, resolved_freq
+
+
+def assert_staging_time_period_matches_implied_freq(
+	conn,
+	schema_name: str,
+	table_name: str,
+	qual_table: str,
+	time_spec: Any,
+	indicator_col: str,
+	indicator_value: str,
+) -> None:
+	"""
+	Raise ValueError when non-empty TIME_PERIOD values fail implied FREQ regex.
+
+	Only applies when time_spec has no freq_column and implied_freq_code is set.
+	Rows are scoped to indicator_col = indicator_value (same filter as promote).
+	"""
+	if time_spec is None:
+		return
+
+	raw, time_col, freq_col = validate_and_resolve_time_spec(
+		conn, schema_name, table_name, time_spec
+	)
+	if freq_col:
+		return
+
+	implied = str(raw.get("implied_freq_code") or "").strip()
+	if not implied:
+		return
+
+	pattern = FREQ_TIME_PERIOD_REGEX.get(implied)
+	if not pattern:
+		raise ValueError(
+			f"FREQ '{implied}' has no TIME_PERIOD format rule; "
+			"choose a supported code (A, Q, M, …) or add a FREQ column to the structure."
+		)
+
+	q_time = quote_identifier(time_col)
+	q_ind = quote_identifier(indicator_col)
+	tp_expr = f"TRIM(CAST({q_time} AS VARCHAR))"
+	pattern_sql = escape_sql_string(pattern)
+	fmt_hint = raw.get("time_period_format") or implied
+
+	invalid_where = (
+		f"CAST({q_ind} AS VARCHAR) = ? "
+		f"AND {tp_expr} <> '' "
+		f"AND NOT regexp_full_match({tp_expr}, '{pattern_sql}')"
+	)
+	params = [str(indicator_value)]
+
+	bad_count_row = conn.execute(
+		f"SELECT COUNT(*) FROM {qual_table} WHERE {invalid_where}",
+		params,
+	).fetchone()
+	bad_count = int(bad_count_row[0]) if bad_count_row else 0
+	if bad_count == 0:
+		return
+
+	sample_rows = conn.execute(
+		f"SELECT DISTINCT {tp_expr} AS tp FROM {qual_table} WHERE {invalid_where} LIMIT 5",
+		params,
+	).fetchall()
+	examples = ", ".join(repr(str(r[0])) for r in sample_rows if r and r[0] is not None)
+
+	raise ValueError(
+		f"{bad_count} row(s) have TIME_PERIOD values that do not match "
+		f"implied FREQ '{implied}' (expected format {fmt_hint}). "
+		f"Examples: {examples}"
+	)
