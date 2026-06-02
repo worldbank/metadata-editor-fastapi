@@ -21,7 +21,7 @@ import os
 from pydantic_settings import BaseSettings
 import json
 from src.DictParams import DictParams
-from src.utils.dta_reader import read_dta
+from src.utils.dta_reader import read_dta, write_dta_to_csv
 import asyncio
 import functools
 import hashlib
@@ -301,7 +301,11 @@ def write_csv_file(fileinfo: FileInfo):
     try:
 
         if file_ext.lower() == '.dta':
-            df, meta = read_dta(fileinfo.file_path, user_missing=True)
+            csv_filepath = os.path.join(
+                folder_path,
+                os.path.splitext(os.path.basename(fileinfo.file_path))[0] + '.csv',
+            )
+            write_dta_to_csv(fileinfo.file_path, csv_filepath, user_missing=True)
 
         elif file_ext == '.sav':
             # Try multiple encodings for robust SAV file reading
@@ -336,24 +340,21 @@ def write_csv_file(fileinfo: FileInfo):
             
             if df is None:
                 raise Exception(f"Failed to read SAV file with any encoding. Last error: {str(last_error)}")
+
+            df = df.convert_dtypes()
+
+            for col in df.columns:
+                if col in meta.missing_user_values:
+                    df[col] = convert_mixed_column(df[col])
+                    print(f"Converted mixed column: {col}", df[col].dtype)
+
+            csv_filepath = os.path.join(
+                folder_path,
+                os.path.splitext(os.path.basename(fileinfo.file_path))[0] + '.csv',
+            )
+            df.to_csv(csv_filepath, index=False)
         else:
             return {"error": "file not supported" + file_ext}
-    
-
-        df=df.convert_dtypes()
-
-        # Convert mixed columns to numeric if they contain user-defined missings
-        for col in df.columns:
-            #check  meta for user-defined missings
-            if col in meta.missing_user_values:
-                #convert mixed columns to numeric
-                df[col] = convert_mixed_column(df[col])
-                print(f"Converted mixed column: {col}", df[col].dtype)
-                continue
-
-
-        csv_filepath = os.path.join(folder_path,os.path.splitext(os.path.basename(fileinfo.file_path))[0] + '.csv')    
-        df.to_csv(csv_filepath, index=False)
 
     except Exception as e:
         raise HTTPException(status_code=400, detail="error writing csv file: " + str(e))
