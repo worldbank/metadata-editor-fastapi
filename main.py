@@ -21,6 +21,7 @@ import os
 from pydantic_settings import BaseSettings
 import json
 from src.DictParams import DictParams
+from src.utils.dta_reader import read_dta
 import asyncio
 import functools
 import hashlib
@@ -300,38 +301,7 @@ def write_csv_file(fileinfo: FileInfo):
     try:
 
         if file_ext.lower() == '.dta':
-            # Try multiple encodings for robust file reading
-            encodings_to_try = [None, "utf-8", "latin1", "cp1252", "iso-8859-1", "cp850"]
-            df, meta = None, None
-            last_error = None
-            
-            for encoding in encodings_to_try:
-                try:
-                    print(f"Trying to read DTA file with encoding: {encoding}")
-                    df, meta = pyreadstat.read_dta(fileinfo.file_path, encoding=encoding, user_missing=True)
-                    print(f"Successfully read DTA file with encoding: {encoding}")
-                    break
-                except (pyreadstat.ReadstatError, UnicodeDecodeError, ValueError) as e:
-                    print(f"Failed to read with encoding {encoding}: {str(e)}")
-                    last_error = e
-                    continue
-            
-            # If all encodings failed, try without user_missing=True as fallback
-            if df is None:
-                print("All encodings failed with user_missing=True, trying without user_missing...")
-                for encoding in encodings_to_try:
-                    try:
-                        print(f"Trying to read DTA file with encoding: {encoding} (user_missing=False)")
-                        df, meta = pyreadstat.read_dta(fileinfo.file_path, encoding=encoding, user_missing=False)
-                        print(f"Successfully read DTA file with encoding: {encoding} (user_missing=False)")
-                        break
-                    except (pyreadstat.ReadstatError, UnicodeDecodeError, ValueError) as e:
-                        print(f"Failed to read with encoding {encoding} (user_missing=False): {str(e)}")
-                        last_error = e
-                        continue
-            
-            if df is None:
-                raise Exception(f"Failed to read DTA file with any encoding. Last error: {str(last_error)}")                
+            df, meta = read_dta(fileinfo.file_path, user_missing=True)
 
         elif file_ext == '.sav':
             # Try multiple encodings for robust SAV file reading

@@ -11,6 +11,7 @@ from src.DictParams import DictParams
 from src.DataUtils import DataUtils
 from src.DataDictionaryWeightValidation import validate_weight_columns_for_descr_stats
 from src.weighted_freq_key import weighted_freq_category_key
+from src.utils.dta_reader import read_dta
 from statsmodels.stats.weightstats import DescrStatsW
 from fastapi.exceptions import HTTPException
 
@@ -32,78 +33,18 @@ class DataDictionary:
         file_ext=os.path.splitext(fileinfo.file_path)[1]
 
         if file_ext.lower() == '.dta':
-            # List of encodings to try in order - includes more robust encodings for problematic files
-            encodings_to_try = [
-                None, 
-                "utf-8", 
-                "latin1", 
-                "cp1252", 
-                "iso-8859-1", 
-                "cp850",
-                "cp437",
-                "windows-1252",
-                "ascii",
-                "utf-16"
-            ]
-            
-            df, meta = None, None
-            last_error = None
-                
-            for encoding in encodings_to_try:
-                try:
-                    if encoding is None:
-                        # Try without specifying encoding first (default behavior)
-                        df, meta = pyreadstat.read_dta(
-                            fileinfo.file_path, 
-                            metadataonly=metadataonly, 
-                            usecols=usecols, 
-                            user_missing=True
-                        )
-                    else:
-                        df, meta = pyreadstat.read_dta(
-                            fileinfo.file_path, 
-                            metadataonly=metadataonly, 
-                            usecols=usecols, 
-                            user_missing=True, 
-                            encoding=encoding
-                        )
-                    break
-                    
-                except (pyreadstat.ReadstatError, UnicodeDecodeError, UnicodeError, ValueError) as e:
-                    last_error = e
-                    continue  # Try next encoding
-                
-            # If all encodings failed, raise the last error
-            if df is None or meta is None:
-                # Second attempt: try all encodings again with user_missing=False
-                
-                for encoding in encodings_to_try:
-                    try:
-                        if encoding is None:
-                            df, meta = pyreadstat.read_dta(
-                                fileinfo.file_path, 
-                                metadataonly=metadataonly, 
-                                usecols=usecols, 
-                                user_missing=False
-                            )
-                        else:
-                            df, meta = pyreadstat.read_dta(
-                                fileinfo.file_path, 
-                                metadataonly=metadataonly, 
-                                usecols=usecols, 
-                                user_missing=False, 
-                                encoding=encoding
-                            )
-                        break
-                        
-                    except (pyreadstat.ReadstatError, UnicodeDecodeError, UnicodeError, ValueError) as e:
-                        last_error = e
-                        continue  # Try next encoding
-                
-                # If still failed after trying all encodings with and without user_missing 
-                if df is None or meta is None:
-                    logger.error(f"Failed to read DTA file. Last error: {str(last_error)}")
-                    raise HTTPException(400, detail=f"Failed to read DTA file. Last error: {str(last_error)}")
+            try:
+                df, meta = read_dta(
+                    fileinfo.file_path,
+                    metadataonly=metadataonly,
+                    usecols=usecols,
+                    user_missing=True,
+                )
+            except Exception as e:
+                logger.error("Failed to read DTA file. Last error: %s", e)
+                raise HTTPException(
+                    400, detail=f"Failed to read DTA file. Last error: {str(e)}"
+                ) from e
 
         elif file_ext.lower() == '.sav':
             encodings_to_try = [

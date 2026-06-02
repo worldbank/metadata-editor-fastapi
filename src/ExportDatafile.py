@@ -10,6 +10,7 @@ from src.FileInfo import FileInfo
 from src.VarInfo import VarInfo
 from src.DictParams import DictParams
 from src.DataUtils import DataUtils
+from src.utils.dta_reader import read_dta
 from statsmodels.stats.weightstats import DescrStatsW
 from types import SimpleNamespace
 import logging
@@ -32,14 +33,9 @@ class ExportDatafile:
             file_ext=os.path.splitext(fileinfo.file_path)[1]
 
             if file_ext.lower() == '.dta':
-                try:
-                    logger.debug(f"Reading DTA file: {fileinfo.file_path}")
-                    df,meta = pyreadstat.read_dta(fileinfo.file_path, usecols=usecols)
-                    logger.debug(f"DTA file loaded successfully, shape: {df.shape}")
-                except UnicodeDecodeError as e:
-                    logger.debug(f"DTA file Unicode decode error, trying with latin1 encoding: {e}")
-                    df,meta = pyreadstat.read_dta(fileinfo.file_path, usecols=usecols, encoding="latin1")
-                    logger.debug(f"DTA file loaded with latin1 encoding, shape: {df.shape}")
+                logger.debug(f"Reading DTA file: {fileinfo.file_path}")
+                df, meta = read_dta(fileinfo.file_path, usecols=usecols, user_missing=True)
+                logger.debug(f"DTA file loaded successfully, shape: {df.shape}")
 
             elif file_ext.lower() == '.sav':
                 logger.debug(f"Reading SAV file: {fileinfo.file_path}")
