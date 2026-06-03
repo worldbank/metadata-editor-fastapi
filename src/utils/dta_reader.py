@@ -1,4 +1,4 @@
-"""Read Stata .dta files with pyreadstat, falling back to pandas when metadata encoding fails."""
+"""Read Stata .dta files with pyreadstat, falling back to pandas when decoding fails."""
 
 from __future__ import annotations
 
@@ -253,13 +253,38 @@ def _read_dta_pandas(
         return df, meta
 
 
+def _is_unicode_error(exc: Exception) -> bool:
+    return isinstance(exc, (UnicodeDecodeError, UnicodeError))
+
+
+def _probe_pyreadstat_read(
+    file_path: str,
+    kwargs: dict,
+    *,
+    require_data_sample: bool = True,
+) -> None:
+    """Raise if pyreadstat cannot read metadata (and optionally one data row)."""
+    meta_kwargs = dict(kwargs)
+    meta_kwargs["metadataonly"] = True
+    pyreadstat.read_dta(file_path, **meta_kwargs)
+
+    if not require_data_sample:
+        return
+
+    sample_kwargs = dict(kwargs)
+    sample_kwargs["metadataonly"] = False
+    sample_kwargs["row_offset"] = 0
+    sample_kwargs["row_limit"] = 1
+    pyreadstat.read_dta(file_path, **sample_kwargs)
+
+
 def _resolve_pyreadstat_kwargs(
     file_path: str,
     usecols: list[str] | None = None,
     user_missing: bool = True,
     encodings: list[str | None] | None = None,
 ) -> dict | None:
-    """Probe pyreadstat encodings with a metadata-only read; return kwargs that work."""
+    """Probe encodings with metadata and a one-row data sample; return kwargs that work."""
     encodings_to_try = encodings or DEFAULT_ENCODINGS
     last_error: Exception | None = None
     saw_unicode_error = False
@@ -267,23 +292,21 @@ def _resolve_pyreadstat_kwargs(
     for missing_flag in (True, False) if user_missing else (False,):
         for encoding in encodings_to_try:
             kwargs = {
-                "metadataonly": True,
+                "metadataonly": False,
                 "usecols": usecols,
                 "user_missing": missing_flag,
             }
             if encoding is not None:
                 kwargs["encoding"] = encoding
             try:
-                pyreadstat.read_dta(file_path, **kwargs)
-                resolved = dict(kwargs)
-                resolved["metadataonly"] = False
-                return resolved
+                _probe_pyreadstat_read(file_path, kwargs, require_data_sample=True)
+                return kwargs
             except UnicodeDecodeError as e:
                 saw_unicode_error = True
                 last_error = e
             except (UnicodeError, pyreadstat.ReadstatError, ValueError) as e:
                 last_error = e
-                if isinstance(e, UnicodeError):
+                if _is_unicode_error(e):
                     saw_unicode_error = True
 
     if saw_unicode_error:
@@ -299,7 +322,7 @@ def read_dta(
     user_missing: bool = True,
     encodings: list[str | None] | None = None,
 ) -> tuple[pd.DataFrame, object]:
-    """Read a Stata .dta file, falling back to pandas when pyreadstat cannot decode metadata."""
+    """Read a Stata .dta file, falling back to pandas when pyreadstat cannot decode it."""
     kwargs = _resolve_pyreadstat_kwargs(
         file_path,
         usecols=usecols,
@@ -307,14 +330,27 @@ def read_dta(
         encodings=encodings,
     )
     if kwargs is not None:
-        if metadataonly:
-            kwargs["metadataonly"] = True
+        read_kwargs = dict(kwargs)
+        read_kwargs["metadataonly"] = metadataonly
         if kwargs.get("user_missing") is False and user_missing:
             logger.debug("Read DTA file with user_missing=False: %s", file_path)
-        return pyreadstat.read_dta(file_path, **kwargs)
+        try:
+            return pyreadstat.read_dta(file_path, **read_kwargs)
+        except UnicodeDecodeError as e:
+            logger.warning(
+                "pyreadstat failed to decode DTA values for %s (%s); using pandas.read_stata",
+                file_path,
+                e,
+            )
+        except UnicodeError as e:
+            logger.warning(
+                "pyreadstat failed to decode DTA values for %s (%s); using pandas.read_stata",
+                file_path,
+                e,
+            )
 
     logger.warning(
-        "pyreadstat failed to decode DTA metadata for %s; using pandas.read_stata",
+        "pyreadstat failed to decode DTA file %s; using pandas.read_stata",
         file_path,
     )
     return _read_dta_pandas(file_path, metadataonly=metadataonly, usecols=usecols)
