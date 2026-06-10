@@ -848,7 +848,12 @@ async def export_data_file(jobid, params: DictParams):
     app.jobs[jobid]["status"]="processing"
 
     try:
-        # Debug logging (only shown when LOG_LEVEL=DEBUG)
+        logger.info(
+            "Export job processing: jobid=%s file=%s format=%s",
+            jobid,
+            params.file_path,
+            params.export_format,
+        )
         logger.debug(f"Starting export for job {jobid} with params: {params}")
         
         result=await loop.run_in_executor(None, exportDF.export_file, params)

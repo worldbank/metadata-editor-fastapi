@@ -6,11 +6,13 @@ from pandas.api.types import is_numeric_dtype
 from pydantic import BaseModel
 import os
 import pyreadstat
+import time
 from src.FileInfo import FileInfo
 from src.VarInfo import VarInfo
 from src.DictParams import DictParams
 from src.DataUtils import DataUtils
 from src.utils.dta_reader import read_dta
+from src.utils.csv_export_reader import load_csv_for_export
 from statsmodels.stats.weightstats import DescrStatsW
 from types import SimpleNamespace
 import logging
@@ -25,12 +27,13 @@ logger = logging.getLogger(__name__)
 
 class ExportDatafile:
 
-    def load_file(self, fileinfo:FileInfo, usecols=None, dtypes=None):
+    def load_file(self, fileinfo:FileInfo, usecols=None, dtypes=None, missings=None):
         try:
             # Debug logging (only shown when LOG_LEVEL=DEBUG)
             logger.debug(f"Loading file: {fileinfo.file_path}, usecols: {usecols}, dtypes: {dtypes}")
             
             file_ext=os.path.splitext(fileinfo.file_path)[1]
+            csv_loader = None
 
             if file_ext.lower() == '.dta':
                 logger.debug(f"Reading DTA file: {fileinfo.file_path}")
@@ -42,46 +45,18 @@ class ExportDatafile:
                 df, meta = pyreadstat.read_sav(fileinfo.file_path, usecols=usecols)   
                 logger.debug(f"SAV file loaded successfully, shape: {df.shape}")
             elif file_ext.lower() == '.csv':
-                logger.debug(f"Reading CSV file: {fileinfo.file_path}")
-                encodings_to_try = [None, "utf-8", "latin1", "cp1252", "iso-8859-1", "cp850"]
-                last_error = None
-                
-                for encoding in encodings_to_try:
-                    try:
-                        if encoding is None:
-                            df = pd.read_csv(fileinfo.file_path, usecols=usecols, dtype=dtypes)
-                        else:
-                            df = pd.read_csv(fileinfo.file_path, usecols=usecols, dtype=dtypes, encoding=encoding)
-                        
-                        logger.debug(f"CSV file loaded successfully with encoding '{encoding}', shape: {df.shape}")
-                        
-                        meta = SimpleNamespace()
-                        meta.column_names=df.columns.tolist()
-                        meta.column_names_to_labels=dict()
-                        meta.number_rows=df.shape[0]
-                        meta.number_columns=df.shape[1]
-                        meta.variable_value_labels=dict()
-                        meta.dtypes=df.dtypes.to_dict()
-                        
-                        break
-                        
-                    except UnicodeDecodeError as e:
-                        last_error = e
-                        logger.debug(f"Failed to read CSV file with encoding '{encoding}': {str(e)}")
-                        continue
-                    except Exception as e:
-                        last_error = e
-                        logger.debug(f"Failed to read CSV file with encoding '{encoding}': {str(e)}")
-                        continue
-                
-                if last_error and 'df' not in locals():
-                    raise Exception(f"Failed to read CSV file with any encoding. Last error: {str(last_error)}")
+                df, meta, csv_loader = load_csv_for_export(
+                    fileinfo.file_path,
+                    usecols=usecols,
+                    dtypes=dtypes,
+                    missings=missings,
+                )
 
             else:
                 raise Exception(f"File format not supported: {file_ext}")
             
             logger.debug(f"File loaded successfully: {fileinfo.file_path}, shape: {df.shape}")
-            return df, meta
+            return df, meta, csv_loader
             
         except Exception as e:
             error_info = {
@@ -100,7 +75,18 @@ class ExportDatafile:
 
     def export_file(self, params: DictParams):
         try:
-            # Debug logging (only shown when LOG_LEVEL=DEBUG)
+            started_at = time.monotonic()
+            file_size = (
+                os.path.getsize(params.file_path)
+                if os.path.isfile(params.file_path)
+                else None
+            )
+            logger.info(
+                "Export starting: file=%s size=%s format=%s",
+                params.file_path,
+                file_size,
+                params.export_format,
+            )
             logger.debug(f"Starting export_file with params: {params}")
             
             if (len(params.dtypes) == 0):
@@ -123,7 +109,16 @@ class ExportDatafile:
                 columns=list(params.var_names)
 
             logger.debug(f"Loading file: {params.file_path}")
-            df,meta = self.load_file(params,usecols=columns, dtypes=dtypes)
+            df, meta, csv_loader = self.load_file(
+                params, usecols=columns, dtypes=dtypes, missings=params.missings
+            )
+            if csv_loader:
+                logger.info(
+                    "CSV loaded via %s path: rows=%s cols=%s",
+                    csv_loader,
+                    df.shape[0],
+                    df.shape[1],
+                )
 
             # Drop excluded fields from the dataframe
             if params.exclude_fields:
@@ -260,11 +255,21 @@ class ExportDatafile:
             else:
                 raise Exception("file format not supported: " + params.export_format)
 
+            elapsed = time.monotonic() - started_at
+            output_size = os.path.getsize(output_file_path)
+            logger.info(
+                "Export completed: output=%s size=%s rows=%s cols=%s elapsed=%.1fs",
+                output_file_path,
+                output_size,
+                df.shape[0],
+                df.shape[1],
+                elapsed,
+            )
             logger.debug(f"Export completed successfully to: {output_file_path}")
             return {
                 'status':'success',
                 'output_file':output_file_path,
-                'output_file_size': DataUtils.sizeof_fmt(os.path.getsize(output_file_path))
+                'output_file_size': DataUtils.sizeof_fmt(output_size)
             }
             
         except Exception as e:
@@ -486,17 +491,15 @@ class ExportDatafile:
             and spss_missing_ranges only contains numeric missing values.
         """
         try:
-            df_for_spss = df.copy()
             spss_missing_ranges = {}
             
             if missing_values:
                 for var, missing_vals in missing_values.items():
-                    if var in df_for_spss.columns:
-                        # Convert special missing values to NaN
+                    if var in df.columns:
+                        # Convert special missing values to NaN in place (avoids full dataframe copy)
                         for missing_val in missing_vals:
                             if isinstance(missing_val, str) and missing_val.isalpha():
-                                # Replace special missing values with NaN
-                                df_for_spss[var] = df_for_spss[var].replace(missing_val, np.nan).infer_objects(copy=False)
+                                df[var] = df[var].replace(missing_val, np.nan).infer_objects(copy=False)
                                 logger.debug(f"Converted special missing value '{missing_val}' to NaN for variable '{var}' in SPSS export")
                         
                         # Only keep numeric missing values for SPSS missing_ranges
@@ -505,7 +508,7 @@ class ExportDatafile:
                             spss_missing_ranges[var] = numeric_missings
             
             logger.debug(f"SPSS export preparation - converted special missings to NaN, missing_ranges: {spss_missing_ranges}")
-            return df_for_spss, spss_missing_ranges
+            return df, spss_missing_ranges
             
         except Exception as e:
             error_info = {
