@@ -11,6 +11,7 @@ A FastAPI-based RESTful service that processes data files (Stata, SPSS, CSV) to 
   - **Stata (.dta)**
   - **CSV (.csv)**
 - **Geospatial metadata endpoints** (optional – see [Geospatial Installation Guide](README-geospatial.md))
+- **AI metadata reviewer** (optional – see [Metadata Reviewer Installation Guide](README-reviewer.md))
 
 ## Integration
 
@@ -63,6 +64,18 @@ Geospatial endpoints require additional native dependencies (GDAL, Fiona, GeoPan
 The recommended approach is to use **Miniconda3** with the `conda-forge` channel, which provides pre-compiled binaries for all platforms.
 
 See the [Geospatial Installation Guide](README-geospatial.md) for full setup instructions.
+
+## Metadata Reviewer (Optional)
+
+The metadata reviewer uses LLM agents to detect quality issues in metadata documents. It depends on the [ai4data](https://pypi.org/project/ai4data/) PyPI package and is not included in `requirements.txt`.
+
+```bash
+pip install -r requirements-reviewer.txt
+cp reviewer.env.example reviewer.env
+# edit reviewer.env with your LLM provider credentials
+```
+
+See the [Metadata Reviewer Installation Guide](README-reviewer.md) for full setup instructions.
 
 ---
 

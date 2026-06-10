@@ -1,0 +1,13 @@
+# Optional metadata reviewer (LLM-powered metadata quality checks)
+# Install AFTER requirements.txt:
+#   pip install -r requirements-reviewer.txt
+#
+# Note: ai4data pins newer fastapi/uvicorn than the base app. Installing this
+# file may upgrade those packages. Install base requirements first.
+#
+# Pick ONE provider extra below (azure shown). Alternatives:
+#   ai4data[metadata-reviewer,openai]>=0.1.0
+#   ai4data[metadata-reviewer,ollama]>=0.1.0
+#   ai4data[metadata-reviewer,anthropic]>=0.1.0
+
+ai4data[metadata-reviewer,azure]>=0.1.0

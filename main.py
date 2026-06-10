@@ -11,12 +11,14 @@ from src.DataDictionaryCsv import DataDictionaryCsv
 from src.ExportDatafile import ExportDatafile
 from src.routers.geospatial import router as geospatial_router
 from src.routers.timeseries import router as timeseries_router
+from src.reviewer import dispose_reviewer_job_if_needed, register_reviewer
 from src.version import get_version
 import re
 import pandas as pd
 import numpy as np
 import math
 import os
+from pathlib import Path
 #from pydantic import BaseSettings
 from pydantic_settings import BaseSettings
 import json
@@ -109,8 +111,9 @@ def setup_logging():
     
     return logging.getLogger(__name__)
 
-# Load environment variables from the .env file
-load_dotenv(override=True)
+# Load environment variables from files next to this module (stable regardless of cwd)
+_PROJECT_ROOT = Path(__file__).resolve().parent
+load_dotenv(_PROJECT_ROOT / ".env", override=True)
 
 # Setup logging with configuration (after loading environment variables)
 logger = setup_logging()
@@ -194,6 +197,7 @@ app.jobs = {}
 app.include_router(geospatial_router)
 # Include timeseries router
 app.include_router(timeseries_router)
+register_reviewer(app, _PROJECT_ROOT)
 
 # Cleanup metrics
 class CleanupMetrics:
@@ -459,6 +463,7 @@ async def periodic_cleanup_worker():
             print(traceback.format_exc())
 
 
+
 async def cleanup_old_jobs():
     """Remove jobs based on age and status policies"""
     start_time = datetime.datetime.now()
@@ -469,6 +474,7 @@ async def cleanup_old_jobs():
     # Cleanup policies by job status
     cleanup_policies = {
         "queued": {"max_age_hours": 2},       # Remove stuck queued jobs after 2 hours
+        "waiting": {"max_age_hours": 2},      # Reviewer jobs waiting on semaphore
         "processing": {"max_age_hours": 8},   # Remove stuck processing jobs after 8 hours  
         "done": {"max_age_hours": MAX_JOB_AGE_HOURS},        # Keep completed jobs for configured time
         "error": {"max_age_hours": MAX_JOB_AGE_HOURS * 2},    # Keep error jobs longer for debugging
@@ -506,6 +512,8 @@ async def cleanup_old_jobs():
     # Remove jobs from memory and corresponding files
     for jobid in jobs_to_remove:
         try:
+            job = app.jobs.get(jobid, {})
+            dispose_reviewer_job_if_needed(app, jobid, job)
             # Remove job file if it exists
             file_path = os.path.join('jobs', f'{jobid}.json')
             if os.path.exists(file_path):
@@ -553,8 +561,8 @@ async def enforce_memory_limits(already_removing):
         
         if job["status"] == "processing":
             priority = 1  # highest priority - never remove processing jobs
-        elif job["status"] == "queued":
-            priority = 2  # high priority - keep queued jobs
+        elif job["status"] in ("queued", "waiting"):
+            priority = 2  # high priority - keep queued / waiting jobs
         elif job["status"] == "error":
             priority = 4  # lower priority for error jobs
         else:  # done
@@ -582,12 +590,14 @@ async def enforce_memory_limits(already_removing):
     for priority, timestamp, jobid in jobs_with_priority:
         if len(jobs_to_remove_for_memory) >= target_removal_count:
             break
-        if priority > 2:  # Don't remove processing or queued jobs for memory limits
+        if priority > 2:  # Don't remove processing, queued, or waiting jobs for memory limits
             jobs_to_remove_for_memory.append(jobid)
     
     # Remove the selected jobs
     for jobid in jobs_to_remove_for_memory:
         try:
+            job = app.jobs.get(jobid, {})
+            dispose_reviewer_job_if_needed(app, jobid, job)
             # Remove job file if it exists
             file_path = os.path.join('jobs', f'{jobid}.json')
             if os.path.exists(file_path):
@@ -1075,7 +1085,7 @@ async def cleanup_status():
         },
         "job_status_breakdown": {
             status: len([job for job in app.jobs.values() if job["status"] == status])
-            for status in ["queued", "processing", "done", "error", "cancelled"]
+            for status in ["queued", "waiting", "processing", "done", "error", "cancelled"]
         }
     }
 
@@ -1142,6 +1152,23 @@ async def cancel_job(jobid: str):
     job = app.jobs[jobid]
     status = job["status"]
     current_time = datetime.datetime.now().isoformat()
+
+    # Metadata reviewer: cooperative cancel via threading.Event + asyncio task cancel
+    if status in ("queued", "waiting", "processing"):
+        dispose_reviewer_job_if_needed(app, jobid, job)
+        if job.get("jobtype") == "metadata-reviewer":
+            job["status"] = "cancelled"
+            job["cancelled_at"] = current_time
+            job["cancellation_reason"] = "User requested cancellation"
+            logger.info("Reviewer job %s cancelled (was %s)", jobid, status)
+            return {
+                "status": "success",
+                "message": f"Job {jobid} has been cancelled",
+                "job_id": jobid,
+                "previous_status": status,
+                "cancelled_at": current_time,
+                "cancellation_reason": "User requested cancellation",
+            }
     
     # Check if job can be cancelled
     if status in ["done", "error", "cancelled"]:
