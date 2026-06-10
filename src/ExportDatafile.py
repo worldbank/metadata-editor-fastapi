@@ -306,22 +306,36 @@ class ExportDatafile:
         """
 
         contains_float = series.apply(lambda x: isinstance(pd.to_numeric(x, errors='coerce'), float)).any()
+        skipped_count = 0
+        skipped_sample = None
 
         def try_convert(x):
+            nonlocal skipped_count, skipped_sample
+            if isinstance(x, str) and len(x) == 1 and x.isalpha():
+                return x
             try:
-                # If there's any float, convert all numeric values to float
                 if contains_float:
-                    return float(x) if isinstance(x, (str, int, float)) and pd.to_numeric(x, errors='coerce') is not None else x
-                # Otherwise, convert numeric strings to int
-                elif isinstance(x, str) and x.isdigit():
+                    numeric = pd.to_numeric(x, errors="coerce")
+                    if isinstance(x, (str, int, float)) and not pd.isna(numeric):
+                        return float(x)
+                    return x
+                if isinstance(x, str) and x.isdigit():
                     return int(x)
-                else:
-                    return x  # Non-numeric strings remain unchanged
+                return x
             except (ValueError, TypeError):
-                print(f"Could not convert {x} to numeric, keeping as is")
+                skipped_count += 1
+                if skipped_sample is None:
+                    skipped_sample = x
                 return x
 
-        return series.map(try_convert)
+        converted = series.map(try_convert)
+        if skipped_count:
+            logger.debug(
+                "Kept %d non-numeric value(s) unchanged (e.g. %r)",
+                skipped_count,
+                skipped_sample,
+            )
+        return converted
     
 
     def combine_missing_values_with_value_labels(self, variable_value_labels, missing_values):

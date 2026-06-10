@@ -19,9 +19,9 @@ REVIEWER_AVAILABLE = False
 def _load_reviewer_env(reviewer_env_path: Path) -> None:
     if reviewer_env_path.is_file():
         load_dotenv(reviewer_env_path, override=False)
-        print(f"Environment: loaded reviewer.env from {reviewer_env_path}")
+        logger.debug("Environment: loaded reviewer.env from %s", reviewer_env_path)
     else:
-        print(f"Environment: no reviewer.env at {reviewer_env_path} (optional)")
+        logger.debug("Environment: no reviewer.env at %s (optional)", reviewer_env_path)
 
 
 def _init_app_state(app: FastAPI) -> None:

@@ -138,28 +138,29 @@ STORAGE_PATH=/path/to/your/metadata-editor/datafiles
 
 ### Logging Configuration
 
-To enable error logging, copy the contents of `env_configuration_example.txt` to end of the `.env` file and modify as needed:
+Copy variables from `logging_config_example.env` into your `.env` file and adjust as needed.
 
-Control logging verbosity and output through environment variables:
+Logs include a timestamp on each line. By default, output goes to the console and to `logs/app.log`, with a new file created at midnight (`logs/app.log.YYYY-MM-DD`). Log files are appended across restarts and retained for 30 days.
 
 ```bash
-# Production (clean output, errors only)
+# Production (errors only, file + console)
 LOG_LEVEL=ERROR
-LOG_FORMAT=simple
-LOG_TO_FILE=false
+LOG_FORMAT=timestamp
+LOG_TO_FILE=true
 
 # Development (detailed debugging)
 LOG_LEVEL=DEBUG
 LOG_FORMAT=detailed
-LOG_TO_FILE=false
+LOG_TO_FILE=true
 
-# File logging with timestamps
+# Console only (no file)
 LOG_LEVEL=INFO
 LOG_FORMAT=timestamp
-LOG_TO_FILE=true
-# Log file path (only used if LOG_TO_FILE=true)
-# Default: logs/error-YYYY-MM-DD.log
-LOG_FILE_PATH=logs/error-2025-08-22.log
+LOG_TO_FILE=false
+
+# Optional overrides
+# LOG_FILE_PATH=logs/app.log
+# LOG_RETENTION_DAYS=30
 ```
 
 ### Complete Setup Example
@@ -172,7 +173,7 @@ STORAGE_PATH=/Users/username/projects/metadata-editor/datafiles
 # Logging configuration (development mode)
 LOG_LEVEL=DEBUG
 LOG_FORMAT=detailed
-LOG_TO_FILE=false
+LOG_TO_FILE=true
 
 # Job management
 CLEANUP_INTERVAL_HOURS=1

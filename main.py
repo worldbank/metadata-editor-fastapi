@@ -40,83 +40,14 @@ from fastapi.exception_handlers import (
     request_validation_exception_handler,
 )
 from starlette.exceptions import HTTPException as StarletteHTTPException
-
-# Configure logging
-def setup_logging():
-    """Configure logging based on environment variables"""
-    # Get logging configuration from environment variables
-    log_level = os.getenv("LOG_LEVEL", "ERROR").upper()
-    log_format = os.getenv("LOG_FORMAT", "simple")
-    log_to_file = os.getenv("LOG_TO_FILE", "false").lower() == "true"
-    
-    # Generate default log file path with date-based naming
-    if log_to_file:
-        # Create logs directory if it doesn't exist
-        logs_dir = "logs"
-        if not os.path.exists(logs_dir):
-            os.makedirs(logs_dir)
-        
-        # Generate date-based filename
-        from datetime import datetime
-        current_date = datetime.now().strftime("%Y-%m-%d")
-        default_log_file = os.path.join(logs_dir, f"error-{current_date}.log")
-    else:
-        default_log_file = "app.log"  # Fallback for when file logging is disabled
-    
-    log_file_path = os.getenv("LOG_FILE_PATH", default_log_file)
-    
-    # Convert string log level to logging constant
-    level_map = {
-        "DEBUG": logging.DEBUG,
-        "INFO": logging.INFO,
-        "WARNING": logging.WARNING,
-        "ERROR": logging.ERROR,
-        "CRITICAL": logging.CRITICAL
-    }
-    
-    log_level_constant = level_map.get(log_level, logging.ERROR)
-    
-    # Define log formats
-    formats = {
-        "simple": "%(levelname)s - %(message)s",
-        "detailed": "%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s",
-        "timestamp": "%(asctime)s - %(levelname)s - %(message)s",
-        "minimal": "%(levelname)s: %(message)s"
-    }
-    
-    log_format_string = formats.get(log_format, formats["simple"])
-    
-    # Configure logging
-    if log_to_file:
-        # Ensure the directory for the log file exists
-        log_dir = os.path.dirname(log_file_path)
-        if log_dir and not os.path.exists(log_dir):
-            os.makedirs(log_dir)
-            
-        logging.basicConfig(
-            level=log_level_constant,
-            format=log_format_string,
-            handlers=[
-                logging.FileHandler(log_file_path),
-                logging.StreamHandler()  # Also log to console
-            ]
-        )
-        print(f"Logging configured: Level={log_level}, Format={log_format}, File={log_file_path}")
-    else:
-        logging.basicConfig(
-            level=log_level_constant,
-            format=log_format_string
-        )
-        print(f"Logging configured: Level={log_level}, Format={log_format}")
-    
-    return logging.getLogger(__name__)
+from src.logging_config import install_asyncio_exception_handler, setup_logging
 
 # Load environment variables from files next to this module (stable regardless of cwd)
 _PROJECT_ROOT = Path(__file__).resolve().parent
 load_dotenv(_PROJECT_ROOT / ".env", override=True)
 
 # Setup logging with configuration (after loading environment variables)
-logger = setup_logging()
+logger = setup_logging(_PROJECT_ROOT)
 
 # Cleanup configuration
 # run cleanup task to remove old jobs
@@ -132,9 +63,9 @@ if storage_path is not None:
     if not os.path.exists(storage_path):
         raise ValueError("STORAGE_PATH does not exist: " + storage_path)
     else:
-        print("STORAGE_PATH:", storage_path)
+        logger.debug("STORAGE_PATH: %s", storage_path)
 else:
-    print("STORAGE_PATH not set - path validation disabled")
+    logger.debug("STORAGE_PATH not set - path validation disabled")
 
 
 
@@ -212,11 +143,28 @@ cleanup_metrics = CleanupMetrics()
 
 @app.exception_handler(StarletteHTTPException)
 async def custom_http_exception_handler(request, exc):
-
-    import traceback
-    print(traceback.format_exc())   
-    print(f"error: {repr(exc)}")
+    if exc.status_code >= 500:
+        logger.error(
+            "HTTP %s %s: %s",
+            request.method,
+            request.url.path,
+            exc.detail,
+            exc_info=True,
+        )
+    else:
+        logger.debug(
+            "HTTP %s %s: %s",
+            request.method,
+            request.url.path,
+            exc.detail,
+        )
     return await http_exception_handler(request, exc)
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 
 
@@ -319,26 +267,26 @@ def write_csv_file(fileinfo: FileInfo):
             
             for encoding in encodings_to_try:
                 try:
-                    print(f"Trying to read SAV file with encoding: {encoding}")
+                    logger.debug("Trying to read SAV file with encoding: %s", encoding)
                     df, meta = pyreadstat.read_sav(fileinfo.file_path, encoding=encoding, user_missing=True)
-                    print(f"Successfully read SAV file with encoding: {encoding}")
+                    logger.debug("Successfully read SAV file with encoding: %s", encoding)
                     break
                 except (pyreadstat.ReadstatError, UnicodeDecodeError, ValueError) as e:
-                    print(f"Failed to read SAV with encoding {encoding}: {str(e)}")
+                    logger.debug("Failed to read SAV with encoding %s: %s", encoding, e)
                     last_error = e
                     continue
             
             # If all encodings failed, try without user_missing=True as fallback
             if df is None:
-                print("All encodings failed with user_missing=True, trying without user_missing...")
+                logger.debug("All encodings failed with user_missing=True, trying without user_missing...")
                 for encoding in encodings_to_try:
                     try:
-                        print(f"Trying to read SAV file with encoding: {encoding} (user_missing=False)")
+                        logger.debug("Trying to read SAV file with encoding: %s (user_missing=False)", encoding)
                         df, meta = pyreadstat.read_sav(fileinfo.file_path, encoding=encoding, user_missing=False)
-                        print(f"Successfully read SAV file with encoding: {encoding} (user_missing=False)")
+                        logger.debug("Successfully read SAV file with encoding: %s (user_missing=False)", encoding)
                         break
                     except (pyreadstat.ReadstatError, UnicodeDecodeError, ValueError) as e:
-                        print(f"Failed to read SAV with encoding {encoding} (user_missing=False): {str(e)}")
+                        logger.debug("Failed to read SAV with encoding %s (user_missing=False): %s", encoding, e)
                         last_error = e
                         continue
             
@@ -438,30 +386,34 @@ def sanitize_jsonable(obj):
 
 
 async def fifo_worker():
-    print("Starting FIFO worker")
+    logger.debug("Starting FIFO worker")
 
     # remove old jobs
     remove_jobs_folder()
 
     while True:
         job = await app.fifo_queue.get()
-        print(f"Got a job: (size of remaining queue: {app.fifo_queue.qsize()})")
-        await job()
+        logger.debug("Got a job (remaining queue size: %s)", app.fifo_queue.qsize())
+        try:
+            await job()
+        except Exception:
+            logger.exception("Unhandled exception in background job")
 
 
 async def periodic_cleanup_worker():
     """Background task to clean up old jobs every few hours"""
-    print(f"Starting periodic cleanup worker - will run every {CLEANUP_INTERVAL_HOURS} hours")
-    
+    logger.debug(
+        "Starting periodic cleanup worker - will run every %s hours",
+        CLEANUP_INTERVAL_HOURS,
+    )
+
     while True:
         await asyncio.sleep(3600 * CLEANUP_INTERVAL_HOURS)
         try:
-            print("Running periodic job cleanup...")
+            logger.debug("Running periodic job cleanup...")
             await cleanup_old_jobs()
-        except Exception as e:
-            print(f"Cleanup error: {e}")
-            import traceback
-            print(traceback.format_exc())
+        except Exception:
+            logger.exception("Cleanup error")
 
 
 
@@ -482,7 +434,7 @@ async def cleanup_old_jobs():
         "cancelled": {"max_age_hours": 1}     # Remove cancelled jobs after 1 hour
     }
     
-    print(f"Starting cleanup - current job count: {len(app.jobs)}")
+    logger.debug("Starting cleanup - current job count: %s", len(app.jobs))
     
     # Find jobs to remove based on age and status
     for jobid, job in app.jobs.items():
@@ -503,10 +455,15 @@ async def cleanup_old_jobs():
                 max_age = cleanup_policies[job_status]["max_age_hours"]
                 if age_hours > max_age:
                     jobs_to_remove.append(jobid)
-                    print(f"Marking job {jobid} for removal - status: {job_status}, age: {age_hours:.2f}h")
-            
+                    logger.debug(
+                        "Marking job %s for removal - status: %s, age: %.2fh",
+                        jobid,
+                        job_status,
+                        age_hours,
+                    )
+
         except Exception as e:
-            print(f"Error processing job {jobid} during cleanup: {e}")
+            logger.error("Error processing job %s during cleanup: %s", jobid, e)
             # If we can't process the job metadata, remove it if it's old enough
             jobs_to_remove.append(jobid)
     
@@ -525,7 +482,7 @@ async def cleanup_old_jobs():
             del app.jobs[jobid]
             
         except Exception as e:
-            print(f"Error removing job {jobid}: {e}")
+            logger.error("Error removing job %s: %s", jobid, e)
     
     # Enforce memory limits (LRU-style cleanup)
     if len(app.jobs) > MAX_MEMORY_JOBS:
@@ -541,8 +498,13 @@ async def cleanup_old_jobs():
     cleanup_metrics.files_removed_total += files_removed
     cleanup_metrics.cleanup_duration_seconds = cleanup_duration
     
-    print(f"Cleanup completed - removed {len(jobs_to_remove)} jobs, {files_removed} files in {cleanup_duration:.2f}s")
-    print(f"Remaining job count: {len(app.jobs)}")
+    logger.debug(
+        "Cleanup completed - removed %s jobs, %s files in %.2fs",
+        len(jobs_to_remove),
+        files_removed,
+        cleanup_duration,
+    )
+    logger.debug("Remaining job count: %s", len(app.jobs))
 
 
 async def enforce_memory_limits(already_removing):
@@ -609,10 +571,10 @@ async def enforce_memory_limits(already_removing):
             cleanup_metrics.jobs_cleaned_total += 1
             
         except Exception as e:
-            print(f"Error removing job {jobid} for memory limit: {e}")
-    
+            logger.error("Error removing job %s for memory limit: %s", jobid, e)
+
     if jobs_to_remove_for_memory:
-        print(f"Removed {len(jobs_to_remove_for_memory)} jobs to enforce memory limit")
+        logger.debug("Removed %s jobs to enforce memory limit", len(jobs_to_remove_for_memory))
 
 
 async def cleanup_orphaned_files():
@@ -638,13 +600,13 @@ async def cleanup_orphaned_files():
                 os.remove(file_path)
                 cleanup_metrics.files_removed_total += 1
             except Exception as e:
-                print(f"Error removing orphaned file {file_path}: {e}")
-        
+                logger.error("Error removing orphaned file %s: %s", file_path, e)
+
         if orphaned_files:
-            print(f"Removed {len(orphaned_files)} orphaned job files")
-            
+            logger.debug("Removed %s orphaned job files", len(orphaned_files))
+
     except Exception as e:
-        print(f"Error during orphaned file cleanup: {e}")
+        logger.error("Error during orphaned file cleanup: %s", e)
 
 
 
@@ -652,8 +614,19 @@ async def cleanup_orphaned_files():
 
 @app.on_event("startup")
 async def start_background_tasks():
+    install_asyncio_exception_handler()
+    logger.info(
+        "Application starting pid=%s version=%s",
+        os.getpid(),
+        get_version(),
+    )
     asyncio.create_task(fifo_worker())
-    asyncio.create_task(periodic_cleanup_worker())        
+    asyncio.create_task(periodic_cleanup_worker())
+
+
+@app.on_event("shutdown")
+async def shutdown_tasks():
+    logger.info("Application shutting down gracefully")
 
 
 @app.post("/data-dictionary-queue")
@@ -712,7 +685,7 @@ async def write_csv_file_callback(jobid, fileinfo: FileInfo):
     try:
         result=await loop.run_in_executor(None, write_csv_file, fileinfo)
     except Exception as e:
-        print ("exception writing csv file", e)        
+        logger.exception("Exception writing csv file for job %s", jobid)
         app.jobs[jobid]["status"]="error"
         app.jobs[jobid]["error"]="failed to write csv file: " + str(e)
         app.jobs[jobid]["completed_at"] = datetime.datetime.now().isoformat()
@@ -1123,7 +1096,7 @@ async def queue_items(jobid: str):
             job_response['data'] = sanitize_jsonable(data)
             return job_response
         elif (job["status"]=="error"):
-            print ("job error", job)
+            logger.debug("Job error response for %s: %s", jobid, job.get("error"))
             # Include detailed error information if available
             if 'error_details' in job:
                 error_detail = f"{job['error']}\n\nDetailed Error Information:\n{json.dumps(job['error_details'], indent=2)}"
