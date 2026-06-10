@@ -133,6 +133,23 @@ class IndicatorReplaceFromCsvResult(BaseModel):
 	staging_dropped: bool = True
 
 
+class IndicatorExportToFileRequest(BaseModel):
+	"""Export project_{sid}.timeseries to a CSV file on the shared editor filesystem."""
+
+	project_id: str = Field(..., description="Same as editor sid (numeric string)")
+	output_csv_path: str = Field(
+		...,
+		description="Absolute path for data/indicator_data.csv under editor project storage",
+	)
+
+
+class IndicatorExportToFileResult(BaseModel):
+	project_id: str
+	output_csv_path: str
+	row_count: int = 0
+	bytes_written: int = 0
+
+
 class IndicatorPromoteRequest(BaseModel):
 	"""Copy rows from staging into timeseries where indicator_column = indicator_value (replace timeseries)."""
 
@@ -299,7 +316,7 @@ class TimeseriesColumnStatsResponse(BaseModel):
 class TimeseriesBaseModel(BaseModel):
     """Base class for timeseries request/response models."""
 
-    pass
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class TimeseriesImportRequest(TimeseriesBaseModel):
@@ -340,7 +357,7 @@ class TimeseriesColumnInfo(TimeseriesBaseModel):
 
 class TimeseriesDescribeResponse(TimeseriesBaseModel):
     project_id: str = Field(..., description="Project identifier")
-    schema: str = Field(..., description="Schema name")
+    schema_name: str = Field(..., alias="schema", description="Schema name")
     table: str = Field(..., description="Table name")
     qualified_table: str = Field(..., description="Schema-qualified table name")
     row_count: int = Field(..., description="Number of rows")
@@ -355,7 +372,7 @@ class TimeseriesDeleteRequest(TimeseriesBaseModel):
 
 class TimeseriesDeleteResponse(TimeseriesBaseModel):
     message: str = Field(..., description="Status message")
-    schema: str = Field(..., description="Schema name")
+    schema_name: str = Field(..., alias="schema", description="Schema name")
     table: str = Field(..., description="Table name")
     qualified_table: str = Field(..., description="Schema-qualified table name")
     rows_deleted: int = Field(..., description="Number of rows that were in the table")

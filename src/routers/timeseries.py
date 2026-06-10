@@ -23,6 +23,7 @@ from ..models.timeseries_models import (
 	CsvDistinctQueryResponse,
 	CsvHeadersValidateResponse,
 	IndicatorPromoteRequest,
+	IndicatorExportToFileRequest,
 	IndicatorReplaceFromCsvRequest,
 	IndicatorTimeseriesImportRequest,
 	PromoteTimeSpec,
@@ -266,6 +267,74 @@ async def _enqueue_replace_from_csv(
 		message="Replace project timeseries from CSV is queued",
 		job_id=jobid,
 		operation_type="indicator-replace-from-csv",
+		project_id=request.project_id,
+	)
+
+
+def _validate_indicator_archive_csv_path(project_id: str, output_csv_path: str) -> str:
+	"""Ensure output path is editor data/indicator_data.csv under STORAGE_PATH."""
+	from main import is_safe_path
+
+	if not output_csv_path or not str(output_csv_path).strip():
+		raise HTTPException(status_code=400, detail="output_csv_path is required")
+
+	path = os.path.abspath(os.path.normpath(str(output_csv_path).strip()))
+	if not is_safe_path(path):
+		raise HTTPException(
+			status_code=400,
+			detail="output_csv_path must be under STORAGE_PATH",
+		)
+	if os.path.basename(path) != "indicator_data.csv":
+		raise HTTPException(
+			status_code=400,
+			detail="output_csv_path must be named indicator_data.csv",
+		)
+	if os.path.basename(os.path.dirname(path)) != "data":
+		raise HTTPException(
+			status_code=400,
+			detail="output_csv_path must be under a data/ directory",
+		)
+	return path
+
+
+async def _enqueue_export_to_file(
+	jobid: str,
+	request: IndicatorExportToFileRequest,
+	service: TimeseriesService,
+) -> TimeseriesJobResponse:
+	from main import app
+
+	current_time = datetime.datetime.now().isoformat()
+	job_info = {
+		"jobid": jobid,
+		"jobtype": "indicator-export-to-file",
+		"status": "queued",
+		"created_at": current_time,
+		"completed_at": None,
+		"last_accessed": current_time,
+		"info": request.model_dump(),
+	}
+	app.jobs[jobid] = job_info
+
+	callback = functools.partial(
+		process_export_to_file_job,
+		jobid,
+		request,
+		service,
+	)
+	await app.fifo_queue.put(callback)
+
+	logger.info(
+		"Queued export-to-file job %s for project %s -> %s",
+		jobid,
+		request.project_id,
+		request.output_csv_path,
+	)
+
+	return TimeseriesJobResponse(
+		message="Export timeseries to project CSV is queued",
+		job_id=jobid,
+		operation_type="indicator-export-to-file",
 		project_id=request.project_id,
 	)
 
@@ -551,6 +620,7 @@ async def timeseries_root():
 			"POST /timeseries/indicators/timeseries/observation-key-validate",
 			"POST /timeseries/indicators/timeseries/facet-value-counts",
 			"GET /timeseries/indicators/timeseries/export",
+			"POST /timeseries/indicators/timeseries/export-to-file-queue",
 			"DELETE /timeseries/indicators/timeseries",
 			"POST /timeseries/indicators/timeseries/recompute-queue",
 		],
@@ -611,7 +681,7 @@ async def describe_timeseries_table(
 
 	return TimeseriesDescribeResponse(
 		project_id=project_id,
-		schema=schema_name,
+		schema_name=schema_name,
 		table=table_name,
 		qualified_table=clean_qualified_table,
 		row_count=row_count,
@@ -699,7 +769,7 @@ async def delete_timeseries_table(
 
 	return TimeseriesDeleteResponse(
 		message=f"Table {schema_name}.timeseries successfully deleted",
-		schema=schema_name,
+		schema_name=schema_name,
 		table=table_name,
 		qualified_table=f"{schema_name}.{table_name}",
 		rows_deleted=row_count
@@ -1122,6 +1192,28 @@ async def indicator_replace_from_csv_queue(
 
 	jobid = f"indicator-replace-csv-{int(time.time() * 1000)}"
 	return await _enqueue_replace_from_csv(jobid, request, service)
+
+
+@router.post("/indicators/timeseries/export-to-file-queue", response_model=TimeseriesJobResponse)
+async def indicator_timeseries_export_to_file_queue(
+	request: IndicatorExportToFileRequest,
+	service: TimeseriesService = Depends(get_timeseries_service),
+):
+	"""
+	Export project_{sid}.timeseries to indicator_data.csv on the shared editor filesystem.
+	Used after import so the project folder archive matches DuckDB without streaming CSV through PHP.
+	"""
+	if not request.project_id.isdigit():
+		raise HTTPException(status_code=400, detail="project_id must be numeric")
+
+	output_path = _validate_indicator_archive_csv_path(
+		request.project_id,
+		request.output_csv_path,
+	)
+	request = request.model_copy(update={"output_csv_path": output_path})
+
+	jobid = f"indicator-export-file-{int(time.time() * 1000)}"
+	return await _enqueue_export_to_file(jobid, request, service)
 
 
 @router.delete("/indicators/timeseries", response_model=TimeseriesDropResponse)
@@ -2395,6 +2487,84 @@ async def process_replace_from_csv_job(
 		app.jobs[jobid]["error"] = str(e)
 		app.jobs[jobid]["error_details"] = {
 			"function": "process_replace_from_csv_job",
+			"jobid": jobid,
+			"traceback": traceback.format_exc(),
+		}
+		app.jobs[jobid]["completed_at"] = datetime.datetime.now().isoformat()
+
+
+async def process_export_to_file_job(
+	jobid: str,
+	request: IndicatorExportToFileRequest,
+	service: TimeseriesService,
+):
+	from main import app
+
+	app.jobs[jobid]["status"] = "processing"
+	db_path = service.get_db_path()
+	schema_name = build_project_schema_name(request.project_id)
+	output_path = _validate_indicator_archive_csv_path(
+		request.project_id,
+		request.output_csv_path,
+	)
+	tmp_path = None
+
+	try:
+		os.makedirs(os.path.dirname(output_path), exist_ok=True)
+		if os.path.isfile(output_path):
+			os.unlink(output_path)
+
+		qual = f"{quote_identifier(schema_name)}.{quote_identifier(TIMESERIES_TABLE_NAME)}"
+		tmp_path = output_path + ".export_" + str(int(time.time() * 1000))
+		path_norm = tmp_path.replace("\\", "/").replace("'", "''")
+
+		with duckdb.connect(db_path) as conn:
+			if not _timeseries_table_exists(conn, schema_name):
+				raise ValueError("Timeseries table not found for this project")
+			row_count = int(conn.execute(f"SELECT COUNT(*) FROM {qual}").fetchone()[0])
+			conn.execute(
+				f"COPY (SELECT * FROM {qual}) TO '{path_norm}' (HEADER, DELIMITER ',')"
+			)
+
+		if not os.path.isfile(tmp_path):
+			raise ValueError("Export did not create output file")
+
+		os.replace(tmp_path, output_path)
+		bytes_written = int(os.path.getsize(output_path))
+
+		result = {
+			"project_id": request.project_id,
+			"output_csv_path": output_path,
+			"row_count": row_count,
+			"bytes_written": bytes_written,
+		}
+
+		app.jobs[jobid]["status"] = "done"
+		app.jobs[jobid]["completed_at"] = datetime.datetime.now().isoformat()
+
+		os.makedirs("jobs", exist_ok=True)
+		with open(os.path.join("jobs", f"{jobid}.json"), "w") as outfile:
+			json.dump(result, outfile)
+
+		logger.info(
+			"Export-to-file job %s completed: %s rows -> %s",
+			jobid,
+			row_count,
+			output_path,
+		)
+
+	except Exception as e:
+		logger.error("Export-to-file job %s failed: %s", jobid, str(e))
+		if tmp_path and os.path.isfile(tmp_path):
+			try:
+				os.unlink(tmp_path)
+			except OSError:
+				pass
+
+		app.jobs[jobid]["status"] = "error"
+		app.jobs[jobid]["error"] = str(e)
+		app.jobs[jobid]["error_details"] = {
+			"function": "process_export_to_file_job",
 			"jobid": jobid,
 			"traceback": traceback.format_exc(),
 		}

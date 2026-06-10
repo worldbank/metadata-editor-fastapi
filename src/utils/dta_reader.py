@@ -369,7 +369,11 @@ def _convert_mixed_column(series: pd.Series) -> pd.Series:
 
 
 def prepare_dta_dataframe(df: pd.DataFrame, meta: object) -> pd.DataFrame:
-    """Apply the same dtype/missing conversions used before CSV export."""
+    """Apply dtype/missing conversions for typed export (Stata/SPSS), not CSV.
+
+    Not used by write_dta_to_csv; CSV has no types and to_csv stringifies as read.
+    See ExportDatafile for mixed-column cleanup on non-CSV export formats.
+    """
     df = df.convert_dtypes()
     missing_user_values = getattr(meta, "missing_user_values", None) or {}
     for col in df.columns:
@@ -538,7 +542,11 @@ def write_dta_to_csv(
                     chunksize=chunksize,
                     user_missing=user_missing,
                 ):
-                    chunk = prepare_dta_dataframe(chunk, chunk_meta)
+                    # CSV has no types; to_csv stringifies values as read from pyreadstat.
+                    # prepare_dta_dataframe (convert_dtypes + mixed-column cleanup) is only
+                    # needed when re-exporting to Stata/SPSS — see ExportDatafile.
+                    # Skipped here to avoid per-chunk CPU cost with no meaningful CSV benefit.
+                    # chunk = prepare_dta_dataframe(chunk, chunk_meta)
                     chunk.to_csv(
                         csv_filepath,
                         mode="w" if first else "a",
@@ -577,6 +585,7 @@ def write_dta_to_csv(
         return
 
     df, meta = read_dta(file_path, user_missing=user_missing)
-    df = prepare_dta_dataframe(df, meta)
+    # See chunked path above: no prepare_dta_dataframe before CSV write.
+    # df = prepare_dta_dataframe(df, meta)
     df.to_csv(csv_filepath, index=False)
     _validate_exported_row_count(len(df), expected_rows, file_path)
