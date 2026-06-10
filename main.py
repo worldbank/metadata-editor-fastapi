@@ -345,12 +345,13 @@ def write_csv_file(fileinfo: FileInfo):
             if df is None:
                 raise Exception(f"Failed to read SAV file with any encoding. Last error: {str(last_error)}")
 
-            df = df.convert_dtypes()
-
-            for col in df.columns:
-                if col in meta.missing_user_values:
-                    df[col] = convert_mixed_column(df[col])
-                    print(f"Converted mixed column: {col}", df[col].dtype)
+            # CSV has no types; to_csv stringifies values as read from pyreadstat.
+            # convert_dtypes / convert_mixed_column are for Stata/SPSS re-export, not CSV.
+            # df = df.convert_dtypes()
+            # for col in df.columns:
+            #     if col in meta.missing_user_values:
+            #         df[col] = convert_mixed_column(df[col])
+            #         print(f"Converted mixed column: {col}", df[col].dtype)
 
             csv_filepath = os.path.join(
                 folder_path,
