@@ -14,6 +14,7 @@ show_help() {
     echo "Options:"
     echo "  --help, -h              Show this help message"
     echo "  --check                 Only run checks without starting the application"
+    echo "  --foreground, -f        Run in foreground (errors visible in terminal; Ctrl+C to stop)"
     echo "  --python-version VER   Use specific Python version (e.g., 3.13, 3.12)"
     echo ""
     echo "Environment variables:"
@@ -32,7 +33,8 @@ show_help() {
     echo "  6. System uvicorn command directly"
     echo ""
     echo "Examples:"
-    echo "  $0                                       # Start with default settings"
+    echo "  $0                                       # Start in background (default)"
+    echo "  $0 --foreground                          # Start in foreground for debugging"
     echo "  HOST=127.0.0.1 $0                       # Start on localhost only"
     echo "  PORT=8000 $0                            # Start on port 8000"
     echo "  CONDA_ENV_NAME=myenv $0                 # Use a custom conda environment"
@@ -69,6 +71,7 @@ CONDA_ENV_NAME="${CONDA_ENV_NAME:-metadata-editor}"
 PYTHON_EXEC=""
 UVICORN_EXEC=""
 ENV_SOURCE=""
+FOREGROUND=false
 
 # Function to print colored output
 print_status() {
@@ -350,8 +353,21 @@ start_app() {
     print_status "  Port:        $port"
     print_status "  Python:      $PYTHON_EXEC"
     print_status "  Environment: $ENV_SOURCE"
+    print_status "  Mode:        $([ "$FOREGROUND" = true ] && echo foreground || echo background)"
     print_status "  Log file:    $LOG_FILE"
-    
+
+    cd "$PROJECT_DIR"
+
+    if [ "$FOREGROUND" = true ]; then
+        print_status "Starting in foreground (Ctrl+C to stop)..."
+        print_status "  Application URL: http://$host:$port"
+        print_status "  API Documentation: http://$host:$port/docs"
+        exec $UVICORN_EXEC main:app \
+            --host "$host" \
+            --port "$port" \
+            --log-level info
+    fi
+
     # Start the application in the background
     nohup $UVICORN_EXEC main:app \
         --host "$host" \
@@ -414,6 +430,10 @@ while [[ $# -gt 0 ]]; do
             print_success "All checks passed!"
             exit 0
             ;;
+        --foreground|-f)
+            FOREGROUND=true
+            shift
+            ;;
         *)
             print_error "Unknown option: $1"
             print_error "Use --help for usage information"
@@ -447,18 +467,4 @@ main() {
     print_success "=== Application startup completed ==="
 }
 
-# If we get here, no special options were processed
-# Check if any arguments were provided
-if [ $# -eq 0 ]; then
-    # No arguments provided, show help
-    show_help
-    echo ""
-    echo "Starting application with default settings..."
-    echo ""
-    main
-else
-    # Arguments were provided but not recognized
-    print_error "Unknown option: $1"
-    print_error "Use --help for usage information"
-    exit 1
-fi
+main

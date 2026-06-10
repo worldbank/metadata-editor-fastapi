@@ -24,6 +24,7 @@ if "%CONDA_ENV_NAME%"=="" set "CONDA_ENV_NAME=metadata-editor"
 :: Internal state
 set "PYTHON_EXEC="
 set "ENV_SOURCE="
+set "FOREGROUND=0"
 
 :: ============================================================
 :: Parse arguments
@@ -31,6 +32,8 @@ set "ENV_SOURCE="
 if /I "%~1"=="--help"  goto :show_help
 if /I "%~1"=="-h"      goto :show_help
 if /I "%~1"=="--check" goto :run_checks
+if /I "%~1"=="--foreground" set "FOREGROUND=1" & goto :main
+if /I "%~1"=="-f"           set "FOREGROUND=1" & goto :main
 
 if not "%~1"=="" (
     echo [ERROR] Unknown option: %~1
@@ -48,8 +51,9 @@ echo.
 echo Usage: %~nx0 [options]
 echo.
 echo Options:
-echo   --help, -h    Show this help message
-echo   --check       Run checks only without starting the application
+echo   --help, -h       Show this help message
+echo   --check          Run checks only without starting the application
+echo   --foreground, -f Run in foreground (errors visible in terminal; Ctrl+C to stop)
 echo.
 echo Environment variables:
 echo   HOST              Server host (default: 0.0.0.0)
@@ -64,7 +68,8 @@ echo   3. Virtual environment (.venv\) if present
 echo   4. System Python
 echo.
 echo Examples:
-echo   %~nx0                              Start with default settings
+echo   %~nx0                              Start in background (default)
+echo   %~nx0 --foreground                 Start in foreground for debugging
 echo   set HOST=127.0.0.1 ^& %~nx0       Start on localhost only
 echo   set PORT=8000 ^& %~nx0            Start on port 8000
 echo   set CONDA_ENV_NAME=myenv ^& %~nx0 Use a custom conda environment name
@@ -238,6 +243,20 @@ if exist "%PID_FILE%" (
 exit /b 1
 
 :: ============================================================
+:start_app_foreground
+:: ============================================================
+echo [INFO] Starting in foreground (Ctrl+C to stop)...
+echo [INFO]   Host:        %HOST%
+echo [INFO]   Port:        %PORT%
+echo [INFO]   Python:      %PYTHON_EXEC%
+echo [INFO]   Environment: %ENV_SOURCE%
+echo [INFO]   URL:         http://%HOST%:%PORT%
+echo [INFO]   API Docs:    http://%HOST%:%PORT%/docs
+cd /d "%PROJECT_DIR%"
+"%PYTHON_EXEC%" -m uvicorn main:app --host %HOST% --port %PORT% --log-level info
+exit /b !errorlevel!
+
+:: ============================================================
 :start_app
 :: ============================================================
 echo [INFO] Starting Metadata Editor FastAPI application...
@@ -324,6 +343,11 @@ call :check_dependencies
 if !errorlevel! neq 0 exit /b 1
 
 call :check_env_config
+
+if "%FOREGROUND%"=="1" (
+    call :start_app_foreground
+    exit /b !errorlevel!
+)
 
 call :start_app
 if !errorlevel! neq 0 exit /b 1

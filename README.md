@@ -105,6 +105,7 @@ Convenience scripts are provided that start the application as a background proc
 **macOS / Linux:**
 ```bash
 ./start.sh        # start in background (auto-detects conda env 'metadata-editor', .venv, or system Python)
+./start.sh -f     # start in foreground — errors print to terminal (Ctrl+C to stop)
 ./stop.sh         # stop gracefully
 ./stop.sh --force # force kill if graceful stop fails
 ./start.sh --help # see all options and environment variables
@@ -113,6 +114,7 @@ Convenience scripts are provided that start the application as a background proc
 **Windows:**
 ```bat
 start.bat         :: start in background (auto-detects conda env 'metadata-editor', .venv, or system Python)
+start.bat -f      :: start in foreground — errors print to terminal (Ctrl+C to stop)
 stop.bat          :: stop gracefully
 stop.bat --force  :: force kill if graceful stop fails
 start.bat --help  :: see all options
