@@ -66,6 +66,7 @@ from ..utils.timeseries_utils import (
 	validate_csv_headers_exact_set,
 	validate_dsd_columns_in_csv_headers,
 )
+from src.job_queue import enqueue_fifo_job
 from ..utils.timeseries_ts_derived import (
 	assert_staging_time_period_matches_implied_freq,
 	build_derived_expressions,
@@ -139,9 +140,7 @@ async def _enqueue_timeseries_import(
 		import_request,
 		service,
 	)
-	await app.fifo_queue.put(callback)
-
-	logger.info("Queued %s job %s for file: %s", jobtype, jobid, import_request.csv_path)
+	await enqueue_fifo_job(app, jobid, callback)
 
 	return TimeseriesJobResponse(
 		message=f"{jobtype} job is queued",
@@ -181,9 +180,7 @@ async def _enqueue_staging_import(
 		import_request,
 		service,
 	)
-	await app.fifo_queue.put(callback)
-
-	logger.info("Queued indicator staging job %s for file: %s", jobid, import_request.csv_path)
+	await enqueue_fifo_job(app, jobid, callback)
 
 	return TimeseriesJobResponse(
 		message="Indicator staging import job is queued",
@@ -218,9 +215,7 @@ async def _enqueue_indicator_promote(
 		promote_request,
 		service,
 	)
-	await app.fifo_queue.put(callback)
-
-	logger.info("Queued indicator promote job %s for project %s", jobid, promote_request.project_id)
+	await enqueue_fifo_job(app, jobid, callback)
 
 	return TimeseriesJobResponse(
 		message="Indicator promote job is queued",
@@ -255,13 +250,7 @@ async def _enqueue_replace_from_csv(
 		request,
 		service,
 	)
-	await app.fifo_queue.put(callback)
-
-	logger.info(
-		"Queued replace-from-csv job %s for project %s",
-		jobid,
-		request.project_id,
-	)
+	await enqueue_fifo_job(app, jobid, callback)
 
 	return TimeseriesJobResponse(
 		message="Replace project timeseries from CSV is queued",
@@ -322,14 +311,7 @@ async def _enqueue_export_to_file(
 		request,
 		service,
 	)
-	await app.fifo_queue.put(callback)
-
-	logger.info(
-		"Queued export-to-file job %s for project %s -> %s",
-		jobid,
-		request.project_id,
-		request.output_csv_path,
-	)
+	await enqueue_fifo_job(app, jobid, callback)
 
 	return TimeseriesJobResponse(
 		message="Export timeseries to project CSV is queued",
@@ -513,9 +495,7 @@ async def _enqueue_recompute_time_derived(
 		request,
 		service,
 	)
-	await app.fifo_queue.put(callback)
-
-	logger.info("Queued recompute ts-derived job %s for project %s", jobid, request.project_id)
+	await enqueue_fifo_job(app, jobid, callback)
 
 	return TimeseriesJobResponse(
 		message="Timeseries _ts_year/_ts_freq recompute is queued",

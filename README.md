@@ -106,6 +106,7 @@ Convenience scripts are provided that start the application as a background proc
 ```bash
 ./start.sh        # start in background (auto-detects conda env 'metadata-editor', .venv, or system Python)
 ./start.sh -f     # start in foreground — errors print to terminal (Ctrl+C to stop)
+./stop.sh && ./start.sh --clear-jobs  # wipe job store + result files, then start fresh
 ./stop.sh         # stop gracefully
 ./stop.sh --force # force kill if graceful stop fails
 ./start.sh --help # see all options and environment variables

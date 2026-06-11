@@ -25,22 +25,24 @@ if "%CONDA_ENV_NAME%"=="" set "CONDA_ENV_NAME=metadata-editor"
 set "PYTHON_EXEC="
 set "ENV_SOURCE="
 set "FOREGROUND=0"
+set "CLEAR_JOBS=0"
 
 :: ============================================================
 :: Parse arguments
 :: ============================================================
+:parse_args
+if "%~1"=="" goto :args_done
 if /I "%~1"=="--help"  goto :show_help
 if /I "%~1"=="-h"      goto :show_help
 if /I "%~1"=="--check" goto :run_checks
-if /I "%~1"=="--foreground" set "FOREGROUND=1" & goto :main
-if /I "%~1"=="-f"           set "FOREGROUND=1" & goto :main
+if /I "%~1"=="--foreground" set "FOREGROUND=1" & shift & goto :parse_args
+if /I "%~1"=="-f"           set "FOREGROUND=1" & shift & goto :parse_args
+if /I "%~1"=="--clear-jobs"  set "CLEAR_JOBS=1"  & shift & goto :parse_args
+echo [ERROR] Unknown option: %~1
+echo [ERROR] Use --help for usage information
+exit /b 1
 
-if not "%~1"=="" (
-    echo [ERROR] Unknown option: %~1
-    echo [ERROR] Use --help for usage information
-    exit /b 1
-)
-
+:args_done
 goto :main
 
 :: ============================================================
@@ -54,6 +56,7 @@ echo Options:
 echo   --help, -h       Show this help message
 echo   --check          Run checks only without starting the application
 echo   --foreground, -f Run in foreground (errors visible in terminal; Ctrl+C to stop)
+echo   --clear-jobs     Delete job store and result files before starting (run after stop.bat)
 echo.
 echo Environment variables:
 echo   HOST              Server host (default: 0.0.0.0)
@@ -70,10 +73,64 @@ echo.
 echo Examples:
 echo   %~nx0                              Start in background (default)
 echo   %~nx0 --foreground                 Start in foreground for debugging
+echo   stop.bat ^&^& %~nx0 --clear-jobs   Stop, clear jobs, restart fresh
 echo   set HOST=127.0.0.1 ^& %~nx0       Start on localhost only
 echo   set PORT=8000 ^& %~nx0            Start on port 8000
 echo   set CONDA_ENV_NAME=myenv ^& %~nx0 Use a custom conda environment name
 echo.
+goto :eof
+
+:: ============================================================
+:resolve_job_store_path
+:: ============================================================
+set "JOB_STORE_RESOLVED=db\jobs.sqlite"
+if not "%JOB_STORE_DB_PATH%"=="" set "JOB_STORE_RESOLVED=%JOB_STORE_DB_PATH%"
+if "%JOB_STORE_DB_PATH%"=="" if exist "%PROJECT_DIR%\.env" (
+    for /f "usebackq tokens=1,* delims==" %%A in (`findstr /R /C:"^[ ]*JOB_STORE_DB_PATH=" "%PROJECT_DIR%\.env"`) do (
+        set "JOB_STORE_RESOLVED=%%B"
+    )
+)
+:: Trim surrounding quotes/spaces (basic)
+set "JOB_STORE_RESOLVED=%JOB_STORE_RESOLVED:"=%"
+if not "%JOB_STORE_RESOLVED:~0,1%"=="\" if not "%JOB_STORE_RESOLVED:~0,1%"=="/" if not "%JOB_STORE_RESOLVED:~1,1%"==":" (
+    set "JOB_STORE_RESOLVED=%PROJECT_DIR%\%JOB_STORE_RESOLVED%"
+)
+goto :eof
+
+:: ============================================================
+:clear_jobs
+:: ============================================================
+echo [WARNING] Clearing job store and result files before startup...
+call :resolve_job_store_path
+
+set "REMOVED_STORE=0"
+set "REMOVED_RESULTS=0"
+
+if exist "!JOB_STORE_RESOLVED!" (
+    del /f "!JOB_STORE_RESOLVED!" >nul 2>&1
+    set /a REMOVED_STORE+=1
+    echo [INFO] Removed: !JOB_STORE_RESOLVED!
+)
+if exist "!JOB_STORE_RESOLVED!-wal" (
+    del /f "!JOB_STORE_RESOLVED!-wal" >nul 2>&1
+    set /a REMOVED_STORE+=1
+    echo [INFO] Removed: !JOB_STORE_RESOLVED!-wal
+)
+if exist "!JOB_STORE_RESOLVED!-shm" (
+    del /f "!JOB_STORE_RESOLVED!-shm" >nul 2>&1
+    set /a REMOVED_STORE+=1
+    echo [INFO] Removed: !JOB_STORE_RESOLVED!-shm
+)
+
+if exist "%PROJECT_DIR%\jobs\*.json" (
+    for %%F in ("%PROJECT_DIR%\jobs\*.json") do (
+        del /f "%%F" >nul 2>&1
+        set /a REMOVED_RESULTS+=1
+    )
+)
+
+echo [SUCCESS] Job clear complete (store files: !REMOVED_STORE!, result files: !REMOVED_RESULTS!)
+echo [INFO] Job audit log (logs\job_audit.log) was not cleared
 goto :eof
 
 :: ============================================================
@@ -343,6 +400,10 @@ call :check_dependencies
 if !errorlevel! neq 0 exit /b 1
 
 call :check_env_config
+
+if "%CLEAR_JOBS%"=="1" (
+    call :clear_jobs
+)
 
 if "%FOREGROUND%"=="1" (
     call :start_app_foreground

@@ -15,6 +15,7 @@ show_help() {
     echo "  --help, -h              Show this help message"
     echo "  --check                 Only run checks without starting the application"
     echo "  --foreground, -f        Run in foreground (errors visible in terminal; Ctrl+C to stop)"
+    echo "  --clear-jobs            Delete job store and result files before starting (run after ./stop.sh)"
     echo "  --python-version VER   Use specific Python version (e.g., 3.13, 3.12)"
     echo ""
     echo "Environment variables:"
@@ -35,6 +36,7 @@ show_help() {
     echo "Examples:"
     echo "  $0                                       # Start in background (default)"
     echo "  $0 --foreground                          # Start in foreground for debugging"
+    echo "  ./stop.sh && $0 --clear-jobs             # Stop, clear queued/finished jobs, restart fresh"
     echo "  HOST=127.0.0.1 $0                       # Start on localhost only"
     echo "  PORT=8000 $0                            # Start on port 8000"
     echo "  CONDA_ENV_NAME=myenv $0                 # Use a custom conda environment"
@@ -72,6 +74,7 @@ PYTHON_EXEC=""
 UVICORN_EXEC=""
 ENV_SOURCE=""
 FOREGROUND=false
+CLEAR_JOBS=false
 
 # Function to print colored output
 print_status() {
@@ -102,6 +105,52 @@ is_app_running() {
         fi
     fi
     return 1  # Not running
+}
+
+# Resolve JOB_STORE_DB_PATH (env, .env file, or default)
+resolve_job_store_path() {
+    local path="${JOB_STORE_DB_PATH:-}"
+    if [ -z "$path" ] && [ -f "$PROJECT_DIR/.env" ]; then
+        path=$(grep -E '^[[:space:]]*JOB_STORE_DB_PATH=' "$PROJECT_DIR/.env" | tail -1 | cut -d= -f2- | tr -d '"' | tr -d "'" | xargs)
+    fi
+    if [ -z "$path" ]; then
+        path="db/jobs.sqlite"
+    fi
+    if [[ "$path" != /* ]]; then
+        path="$PROJECT_DIR/$path"
+    fi
+    echo "$path"
+}
+
+# Delete durable job store and result JSON files (startup reset)
+clear_jobs() {
+    print_warning "Clearing job store and result files before startup..."
+
+    local store_path
+    store_path="$(resolve_job_store_path)"
+    local removed_store=0
+    local removed_results=0
+
+    for f in "$store_path" "${store_path}-wal" "${store_path}-shm"; do
+        if [ -f "$f" ]; then
+            rm -f "$f"
+            removed_store=$((removed_store + 1))
+            print_status "Removed: $f"
+        fi
+    done
+
+    if [ -d "$PROJECT_DIR/jobs" ]; then
+        shopt -s nullglob
+        local result_files=("$PROJECT_DIR/jobs"/*.json)
+        shopt -u nullglob
+        for f in "${result_files[@]}"; do
+            rm -f "$f"
+            removed_results=$((removed_results + 1))
+        done
+    fi
+
+    print_success "Job clear complete (store files: $removed_store, result files: $removed_results)"
+    print_status "Job audit log (logs/job_audit.log) was not cleared"
 }
 
 # Function to create necessary directories
@@ -434,6 +483,10 @@ while [[ $# -gt 0 ]]; do
             FOREGROUND=true
             shift
             ;;
+        --clear-jobs)
+            CLEAR_JOBS=true
+            shift
+            ;;
         *)
             print_error "Unknown option: $1"
             print_error "Use --help for usage information"
@@ -460,7 +513,11 @@ main() {
     detect_python_executables
     check_dependencies
     check_env_config
-    
+
+    if [ "$CLEAR_JOBS" = true ]; then
+        clear_jobs
+    fi
+
     # Start the application
     start_app
     

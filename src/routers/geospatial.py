@@ -25,6 +25,7 @@ from ..models.geospatial_models import (
     GeospatialDataExtractionJobResponse
 )
 from ..services.geospatial_service import GeospatialService
+from src.job_queue import enqueue_fifo_job
 
 logger = logging.getLogger(__name__)
 
@@ -157,11 +158,8 @@ async def get_geospatial_layers_queue(
             request
         )
         
-        # Add to the main app's FIFO queue
-        await app.fifo_queue.put(layers_callback)
-        
-        logger.info(f"Queued geospatial layers extraction job {jobid} for file: {request.file_path}")
-        
+        await enqueue_fifo_job(app, jobid, layers_callback)
+
         return GeospatialJobResponse(
             message="Geospatial layers extraction job is queued",
             job_id=jobid,
@@ -256,11 +254,8 @@ async def extract_geospatial_data_queue(
             request
         )
         
-        # Add to the main app's FIFO queue
-        await app.fifo_queue.put(data_callback)
-        
-        logger.info(f"Queued geospatial data extraction job {jobid} for file: {request.file_path} -> {request.csv_output_path}")
-        
+        await enqueue_fifo_job(app, jobid, data_callback)
+
         return GeospatialDataExtractionJobResponse(
             message="Geospatial data extraction job is queued",
             job_id=jobid,
@@ -349,11 +344,8 @@ async def extract_geospatial_metadata_queue(
             request
         )
         
-        # Add to the main app's FIFO queue
-        await app.fifo_queue.put(metadata_callback)
-        
-        logger.info(f"Queued geospatial metadata extraction job {jobid} for file: {request.file_path}")
-        
+        await enqueue_fifo_job(app, jobid, metadata_callback)
+
         return GeospatialMetadataJobResponse(
             message="Geospatial metadata extraction job is queued",
             job_id=jobid,
@@ -448,11 +440,8 @@ async def extract_geospatial_metadata_batch_queue(
             request
         )
         
-        # Add to the main app's FIFO queue
-        await app.fifo_queue.put(batch_callback)
-        
-        logger.info(f"Queued batch geospatial metadata extraction job {batch_jobid} for file: {request.file_path}")
-        
+        await enqueue_fifo_job(app, batch_jobid, batch_callback)
+
         return GeospatialBatchJobResponse(
             message="Batch geospatial metadata extraction job is queued",
             job_id=batch_jobid,
@@ -776,11 +765,8 @@ async def extract_geospatial_metadata_with_images_queue(
             request
         )
         
-        # Add to the main app's FIFO queue
-        await app.fifo_queue.put(metadata_callback)
-        
-        logger.info(f"Queued geospatial metadata extraction job with images {jobid} for file: {request.file_path}")
-        
+        await enqueue_fifo_job(app, jobid, metadata_callback)
+
         return GeospatialMetadataJobResponse(
             message="Geospatial metadata extraction job with images is queued (WARNING: May cause threading issues)",
             job_id=jobid,

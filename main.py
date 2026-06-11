@@ -41,6 +41,8 @@ from fastapi.exception_handlers import (
 )
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from src.logging_config import install_asyncio_exception_handler, setup_logging
+from src.job_queue import enqueue_fifo_job, recover_pending_jobs
+from src.job_store import JobStore
 
 # Load environment variables from files next to this module (stable regardless of cwd)
 _PROJECT_ROOT = Path(__file__).resolve().parent
@@ -123,6 +125,7 @@ app = FastAPI()
 app.fifo_queue = asyncio.Queue()
 
 app.jobs = {}
+app.job_store = JobStore()
 
 # Include geospatial router
 app.include_router(geospatial_router)
@@ -388,12 +391,11 @@ def sanitize_jsonable(obj):
 async def fifo_worker():
     logger.debug("Starting FIFO worker")
 
-    # remove old jobs
-    remove_jobs_folder()
+    await recover_pending_jobs(app)
 
     while True:
         job = await app.fifo_queue.get()
-        logger.debug("Got a job (remaining queue size: %s)", app.fifo_queue.qsize())
+        logger.debug("FIFO worker dequeuing (remaining=%s)", app.fifo_queue.qsize())
         try:
             await job()
         except Exception:
@@ -478,9 +480,10 @@ async def cleanup_old_jobs():
                 os.remove(file_path)
                 files_removed += 1
             
-            # Remove from memory
+            # Remove from memory and durable store
             del app.jobs[jobid]
-            
+            app.job_store.delete_job(jobid)
+
         except Exception as e:
             logger.error("Error removing job %s: %s", jobid, e)
     
@@ -591,7 +594,7 @@ async def cleanup_orphaned_files():
             filename = os.path.basename(file_path)
             jobid = filename[:-5]  # Remove .json extension
             
-            if jobid not in app.jobs:
+            if jobid not in app.jobs and app.job_store.get_job(jobid) is None:
                 orphaned_files.append(file_path)
         
         # Remove orphaned files
@@ -644,7 +647,7 @@ async def data_dictionary_queue(params: DictParams):
         }
     
     data_dict_callback = functools.partial(write_data_dictionary_file, jobid, params)
-    await app.fifo_queue.put( data_dict_callback )
+    await enqueue_fifo_job(app, jobid, data_dict_callback)
 
     return JSONResponse(status_code=202, content={
         "message": "Item is queued",
@@ -669,7 +672,7 @@ async def write_csv_queue(fileinfo: FileInfo):
         }
     
     generate_csv_callback=functools.partial(write_csv_file_callback, jobid, fileinfo)
-    await app.fifo_queue.put( generate_csv_callback )
+    await enqueue_fifo_job(app, jobid, generate_csv_callback)
 
     return JSONResponse(status_code=202, content={
         "message": "file is queued",
@@ -725,7 +728,7 @@ async def remove_csv_columns_queue(params: RemoveColumnsParams):
         "info": params.model_dump(),
     }
     callback = functools.partial(remove_columns_from_csv_callback, jobid, params)
-    await app.fifo_queue.put(callback)
+    await enqueue_fifo_job(app, jobid, callback)
 
     return JSONResponse(status_code=202, content={
         "message": "Remove CSV columns job is queued",
@@ -808,7 +811,7 @@ async def export_data_queue(params: DictParams):
         }
     
     data_export_callback = functools.partial(export_data_file, jobid, params)
-    await app.fifo_queue.put( data_export_callback )
+    await enqueue_fifo_job(app, jobid, data_export_callback)
 
     return JSONResponse(status_code=202, content={
         "message": "Item is queued",
@@ -832,7 +835,7 @@ async def process_microdata_queue(params: DataProcessingParams):
         }
     
     process_microdata_callback = functools.partial(process_microdata_file, jobid, params)
-    await app.fifo_queue.put( process_microdata_callback )
+    await enqueue_fifo_job(app, jobid, process_microdata_callback)
 
     return JSONResponse(status_code=202, content={
         "message": "Microdata processing is queued",
@@ -1058,6 +1061,7 @@ async def cleanup_status():
         "current_status": {
             "job_count": len(app.jobs),
             "queue_size": app.fifo_queue.qsize(),
+            "queued_in_store": app.job_store.count_by_status("queued"),
             "max_memory_jobs": MAX_MEMORY_JOBS,
             "max_job_age_hours": MAX_JOB_AGE_HOURS,
             "cleanup_interval_hours": CLEANUP_INTERVAL_HOURS
@@ -1079,15 +1083,23 @@ async def manual_cleanup():
         raise HTTPException(status_code=500, detail=f"Cleanup failed: {str(e)}")
 
 
+def _get_job_record(jobid: str) -> dict | None:
+    if jobid in app.jobs:
+        return app.jobs[jobid]
+    stored = app.job_store.get_job(jobid)
+    if stored:
+        app.jobs[jobid] = stored
+    return stored
+
+
 @app.get("/jobs/{jobid}")
 async def queue_items(jobid: str):
-
-    if jobid in app.jobs:
-        job = app.jobs[jobid]
-        
+    job = _get_job_record(jobid)
+    if job:
         # Update last_accessed timestamp
         job["last_accessed"] = datetime.datetime.now().isoformat()
-        
+        app.job_store.update_status(jobid, job["status"], touch_accessed=True)
+
         if (job["status"]=="done"):
             data={}
             file_path=os.path.join('jobs', str(jobid) + '.json')
@@ -1111,7 +1123,7 @@ async def queue_items(jobid: str):
         else:
             return sanitize_jsonable(job)
 
-    raise HTTPException(status_code=404, detail="Job not found") 
+    raise HTTPException(status_code=404, detail="Job not found")
 
 
 @app.delete("/jobs/{jobid}")
@@ -1125,10 +1137,10 @@ async def cancel_job(jobid: str):
     Returns:
         Success message with cancellation details
     """
-    if jobid not in app.jobs:
+    job = _get_job_record(jobid)
+    if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    
-    job = app.jobs[jobid]
+
     status = job["status"]
     current_time = datetime.datetime.now().isoformat()
 
@@ -1140,6 +1152,14 @@ async def cancel_job(jobid: str):
             job["cancelled_at"] = current_time
             job["cancellation_reason"] = "User requested cancellation"
             logger.info("Reviewer job %s cancelled (was %s)", jobid, status)
+            app.job_store.update_status(
+                jobid,
+                "cancelled",
+                cancelled_at=current_time,
+                cancellation_reason="User requested cancellation",
+                completed_at=current_time,
+                touch_accessed=True,
+            )
             return {
                 "status": "success",
                 "message": f"Job {jobid} has been cancelled",
@@ -1166,19 +1186,28 @@ async def cancel_job(jobid: str):
         logger.info(f"Job {jobid} marked as cancelled (was processing)")
         
     elif status == "queued":
-        # Remove from queue and mark as cancelled
+        # Mark as cancelled; FIFO wrapper skips if still waiting in asyncio queue
         job["status"] = "cancelled"
         job["cancelled_at"] = current_time
         job["cancellation_reason"] = "User requested cancellation"
         logger.info(f"Job {jobid} cancelled (was queued)")
-    
+
     else:
         # Handle any other status
         job["status"] = "cancelled"
         job["cancelled_at"] = current_time
         job["cancellation_reason"] = "User requested cancellation"
         logger.info(f"Job {jobid} cancelled (was {status})")
-    
+
+    app.job_store.update_status(
+        jobid,
+        "cancelled",
+        cancelled_at=current_time,
+        cancellation_reason="User requested cancellation",
+        completed_at=current_time,
+        touch_accessed=True,
+    )
+
     return {
         "status": "success",
         "message": f"Job {jobid} has been cancelled",

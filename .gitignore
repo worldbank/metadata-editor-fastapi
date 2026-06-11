@@ -1,3 +1,9 @@
 data
 .env
+reviewer.env
 __pycache__
+venv313
+trash/
+db/
+tests/
+logs/
