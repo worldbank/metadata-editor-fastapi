@@ -79,7 +79,7 @@ See `reviewer.env.example` for Azure API key vs Entra ID client-credentials setu
 ## Step 4 – Start the service
 
 ```bash
-python3 -m uvicorn main:app --host 0.0.0.0 --port 8000
+python3 -m uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 
 On startup you should see either:

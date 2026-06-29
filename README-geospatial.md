@@ -92,7 +92,7 @@ To quickly verify the geospatial stack is working, you can run the application m
 
 ```bash
 conda activate metadata-editor
-python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
+python -m uvicorn main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 The application will be available at `http://localhost:8000`. Check the `/docs` page and confirm geospatial endpoints are listed.

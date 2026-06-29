@@ -139,7 +139,7 @@ show_help() {
     echo "  logs N        Show last N lines of logs (default: 50)"
     echo ""
         echo "Environment Variables (for start/restart):"
-        echo "  HOST          Server host (default: 0.0.0.0)"
+        echo "  HOST          Server host (default: 127.0.0.1)"
         echo "  PORT          Server port (default: 8000)"
         echo "  RELOAD        Enable auto-reload (default: true)"
         echo "  STORAGE_PATH  Path to data storage directory"

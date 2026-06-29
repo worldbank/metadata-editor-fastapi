@@ -90,7 +90,7 @@ install-service.bat
 |---|---|---|
 | `CONDA_PYTHON_PATH` | **(required)** | Absolute path to `python.exe` in the conda env |
 | `PROJECT_DIR` | Two levels up from `deploy\windows\` | Application root where `main.py` lives |
-| `HOST` | `0.0.0.0` | Bind address |
+| `HOST` | `127.0.0.1` | Bind address |
 | `PORT` | `8000` | Listening port |
 | `NSSM_PATH` | Searched on `%PATH%` | Full path to `nssm.exe` |
 | `SHARED_GROUP` | `editor-shared` | Local group for shared storage access |

@@ -26,6 +26,7 @@ from ..models.geospatial_models import (
 )
 from ..services.geospatial_service import GeospatialService
 from src.job_queue import enqueue_fifo_job
+from src.utils.path_security import ensure_safe_path, ensure_safe_paths, ensure_safe_paths_http
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,10 @@ router = APIRouter(prefix="/geospatial", tags=["geospatial"])
 
 # Initialize the geospatial service
 geospatial_service = GeospatialService()
+
+
+def _require_storage_paths(*paths: str) -> None:
+    ensure_safe_paths_http(*paths, label="file_path")
 
 
 def get_geospatial_service() -> GeospatialService:
@@ -95,6 +100,7 @@ async def get_geospatial_layers(
         file_path: Path to the geospatial file
     """
     try:
+        _require_storage_paths(file_path)
         # Validate file path
         if not os.path.exists(file_path):
             raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
@@ -124,7 +130,7 @@ async def get_geospatial_layers_queue(
     This extracts only layer information without other analysis
     """
     try:
-        # Validate file path
+        _require_storage_paths(request.file_path)
         if not os.path.exists(request.file_path):
             raise HTTPException(status_code=404, detail=f"File not found: {request.file_path}")
         
@@ -183,7 +189,7 @@ async def extract_geospatial_data_queue(
     This extracts raw data and saves it as a CSV file
     """
     try:
-        # Validate file path
+        _require_storage_paths(request.file_path, request.csv_output_path)
         if not os.path.exists(request.file_path):
             raise HTTPException(status_code=404, detail=f"File not found: {request.file_path}")
         
@@ -280,7 +286,7 @@ async def extract_geospatial_metadata_queue(
     Queue a geospatial metadata extraction job for asynchronous processing
     """
     try:
-        # Validate file path
+        _require_storage_paths(request.file_path)
         if not os.path.exists(request.file_path):
             raise HTTPException(status_code=404, detail=f"File not found: {request.file_path}")
         
@@ -370,7 +376,7 @@ async def extract_geospatial_metadata_batch_queue(
     Queue multiple geospatial metadata extraction jobs for batch processing
     """
     try:
-        # Validate file path
+        _require_storage_paths(request.file_path)
         if not os.path.exists(request.file_path):
             raise HTTPException(status_code=404, detail=f"File not found: {request.file_path}")
         
@@ -468,6 +474,7 @@ async def process_geospatial_layers_job(jobid: str, request: GeospatialImportReq
     app.jobs[jobid]["status"] = "processing"
     
     try:
+        ensure_safe_path(request.file_path, label="file_path")
         logger.info(f"Processing geospatial layers extraction job {jobid} for file: {request.file_path}")
         
         # Get basic file information to extract layers only
@@ -527,6 +534,7 @@ async def process_geospatial_data_job(jobid: str, request: GeospatialDataExtract
     app.jobs[jobid]["status"] = "processing"
     
     try:
+        ensure_safe_paths(request.file_path, request.csv_output_path, label="file_path")
         logger.info(f"Processing geospatial data extraction job {jobid} for file: {request.file_path} -> {request.csv_output_path}")
         
         # Extract data and save as CSV using the service
@@ -581,6 +589,7 @@ async def process_geospatial_metadata_job(jobid: str, request: GeospatialMetadat
     app.jobs[jobid]["status"] = "processing"
     
     try:
+        ensure_safe_path(request.file_path, label="file_path")
         logger.info(f"Processing geospatial metadata extraction job {jobid} for file: {request.file_path}")
         
         # Extract metadata using the service
@@ -636,6 +645,7 @@ async def process_geospatial_batch_metadata_job(jobid: str, request: GeospatialB
     app.jobs[jobid]["status"] = "processing"
     
     try:
+        ensure_safe_path(request.file_path, label="file_path")
         logger.info(f"Processing batch geospatial metadata extraction job {jobid} for file: {request.file_path}")
         
         # Extract metadata using the service for each layer/band
@@ -699,7 +709,7 @@ async def extract_geospatial_metadata_with_images_queue(
     WARNING: This may cause threading issues on some systems
     """
     try:
-        # Validate file path
+        _require_storage_paths(request.file_path)
         if not os.path.exists(request.file_path):
             raise HTTPException(status_code=404, detail=f"File not found: {request.file_path}")
         
@@ -793,6 +803,7 @@ async def process_geospatial_metadata_with_images_job(jobid: str, request: Geosp
     app.jobs[jobid]["status"] = "processing"
     
     try:
+        ensure_safe_path(request.file_path, label="file_path")
         logger.info(f"Processing geospatial metadata extraction with images job {jobid} for file: {request.file_path}")
         
         # Extract metadata using the service with images enabled
@@ -848,7 +859,7 @@ async def get_geospatial_bounding_box(
     Get bounding box for a geospatial file in WGS84 coordinates
     """
     try:
-        # Validate file path
+        _require_storage_paths(request.file_path)
         if not os.path.exists(request.file_path):
             raise HTTPException(status_code=404, detail=f"File not found: {request.file_path}")
         
@@ -875,7 +886,7 @@ async def enrich_geospatial_file(
     Enrich a geospatial file with additional metadata and analytics
     """
     try:
-        # Validate file path
+        _require_storage_paths(request.file_path)
         if not os.path.exists(request.file_path):
             raise HTTPException(status_code=404, detail=f"File not found: {request.file_path}")
         
@@ -908,7 +919,7 @@ async def get_comprehensive_metadata(
     Get comprehensive metadata including file info, bounding box, and analytics
     """
     try:
-        # Validate file path
+        _require_storage_paths(request.file_path)
         if not os.path.exists(request.file_path):
             raise HTTPException(status_code=404, detail=f"File not found: {request.file_path}")
         
@@ -935,7 +946,7 @@ async def validate_geospatial_file(
     Validate if a file is a supported geospatial format
     """
     try:
-        # Validate file path
+        _require_storage_paths(request.file_path)
         if not os.path.exists(request.file_path):
             raise HTTPException(status_code=404, detail=f"File not found: {request.file_path}")
         
@@ -983,6 +994,7 @@ async def enrich_geospatial_file_queue(
     Queue a request to enrich a geospatial file (for long-running operations)
     """
     try:
+        _require_storage_paths(request.file_path)
         # Generate job ID
         jobid = f'geospatial-enrich-{int(time.time())}'
         current_time = datetime.datetime.now().isoformat()
@@ -1020,6 +1032,7 @@ async def transform_coordinate_system(
     """
     Transform coordinate system of a geospatial file
     """
+    _require_storage_paths(request.file_path)
     # TODO: Implement coordinate system transformation
     raise HTTPException(status_code=501, detail="Coordinate system transformation not yet implemented")
 
@@ -1032,6 +1045,7 @@ async def clip_geospatial_data(
     """
     Clip geospatial data using a geometry
     """
+    _require_storage_paths(request.file_path)
     # TODO: Implement spatial clipping
     raise HTTPException(status_code=501, detail="Spatial clipping not yet implemented")
 
@@ -1044,5 +1058,6 @@ async def generate_preview(
     """
     Generate preview image of geospatial data
     """
+    _require_storage_paths(request.file_path)
     # TODO: Implement preview generation
     raise HTTPException(status_code=501, detail="Preview generation not yet implemented")

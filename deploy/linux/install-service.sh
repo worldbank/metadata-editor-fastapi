@@ -14,7 +14,7 @@
 # OPTIONAL overrides (defaults shown):
 #   PROJECT_DIR         Path to the application root  (default: directory containing this script's parent)
 #   SERVICE_USER        OS user the service runs as   (default: editor-fastapi)
-#   HOST                Bind address                  (default: 0.0.0.0)
+#   HOST                Bind address                  (default: 127.0.0.1)
 #   PORT                Port                          (default: 8000)
 #   SHARED_GROUP        Group shared with web server  (default: editor-shared)
 #   WEB_SERVER_USER     Apache/NGINX user to add to shared group (default: www-data)
@@ -35,7 +35,7 @@ TEMPLATE_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/editor-fastapi.serv
 PROJECT_DIR="${PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 SERVICE_USER="${SERVICE_USER:-editor-fastapi}"
 PORT="${PORT:-8000}"
-HOST="${HOST:-0.0.0.0}"
+HOST="${HOST:-127.0.0.1}"
 SHARED_GROUP="${SHARED_GROUP:-editor-shared}"
 WEB_SERVER_USER="${WEB_SERVER_USER:-www-data}"
 STORAGE_PATH="${STORAGE_PATH:-}"

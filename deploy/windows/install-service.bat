@@ -16,7 +16,7 @@ setlocal EnableDelayedExpansion
 :: OPTIONAL overrides (defaults shown):
 ::   PROJECT_DIR         Application root - where main.py lives
 ::                       (default: parent of the deploy\windows folder)
-::   HOST                Bind address          (default: 0.0.0.0)
+::   HOST                Bind address          (default: 127.0.0.1)
 ::   PORT                Listening port        (default: 8000)
 ::   NSSM_PATH           Full path to nssm.exe (default: looks on PATH)
 ::   SHARED_GROUP        Local group for shared storage access
@@ -42,7 +42,7 @@ set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 for %%D in ("%SCRIPT_DIR%\..\..") do set "DEFAULT_PROJECT_DIR=%%~fD"
 if "%PROJECT_DIR%"=="" set "PROJECT_DIR=%DEFAULT_PROJECT_DIR%"
 
-if "%HOST%"==""           set "HOST=0.0.0.0"
+if "%HOST%"==""           set "HOST=127.0.0.1"
 if "%PORT%"==""           set "PORT=8000"
 if "%SHARED_GROUP%"==""   set "SHARED_GROUP=editor-shared"
 if "%WEB_SERVER_USER%"=="" set "WEB_SERVER_USER=IIS_IUSRS"
@@ -73,7 +73,7 @@ echo   CONDA_PYTHON_PATH   Full path to python.exe in the conda environment
 echo.
 echo Optional environment variables:
 echo   PROJECT_DIR         Application root directory
-echo   HOST                Bind address (default: 0.0.0.0)
+echo   HOST                Bind address (default: 127.0.0.1)
 echo   PORT                Port (default: 8000)
 echo   NSSM_PATH           Path to nssm.exe (default: searches PATH)
 echo   SHARED_GROUP        Local group for shared storage (default: editor-shared)

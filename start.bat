@@ -13,7 +13,7 @@ set "MAIN_FILE=%PROJECT_DIR%\main.py"
 set "PID_FILE=%PROJECT_DIR%\logs\app.pid"
 set "LOG_FILE=%PROJECT_DIR%\logs\app.log"
 set "LOG_ERR_FILE=%PROJECT_DIR%\logs\app_err.log"
-set "DEFAULT_HOST=0.0.0.0"
+set "DEFAULT_HOST=127.0.0.1"
 set "DEFAULT_PORT=8000"
 
 :: Allow override via environment variables
@@ -59,9 +59,9 @@ echo   --foreground, -f Run in foreground (errors visible in terminal; Ctrl+C to
 echo   --clear-jobs     Delete job store and result files before starting (run after stop.bat)
 echo.
 echo Environment variables:
-echo   HOST              Server host (default: 0.0.0.0)
+echo   HOST              Server host (default: 127.0.0.1)
 echo   PORT              Server port (default: 8000)
-echo   STORAGE_PATH      Path to data storage directory
+echo   STORAGE_PATH      Required in .env — directory path or empty to disable validation
 echo   CONDA_ENV_NAME    Conda environment name to use (default: metadata-editor)
 echo.
 echo Python Environment Detection (in priority order):
@@ -74,7 +74,7 @@ echo Examples:
 echo   %~nx0                              Start in background (default)
 echo   %~nx0 --foreground                 Start in foreground for debugging
 echo   stop.bat ^&^& %~nx0 --clear-jobs   Stop, clear jobs, restart fresh
-echo   set HOST=127.0.0.1 ^& %~nx0       Start on localhost only
+echo   set HOST=0.0.0.0 ^& %~nx0         Bind on all interfaces (advanced)
 echo   set PORT=8000 ^& %~nx0            Start on port 8000
 echo   set CONDA_ENV_NAME=myenv ^& %~nx0 Use a custom conda environment name
 echo.
@@ -266,17 +266,33 @@ echo [INFO] Checking environment configuration...
 if exist "%PROJECT_DIR%\.env" (
     echo [SUCCESS] Found .env configuration file
 ) else (
-    echo [WARNING] No .env file found - using default configuration
+    echo [WARNING] No .env file found - copy .env.example to .env before starting
 )
+
+set "STORAGE_SETTING=__MISSING__"
 if not "%STORAGE_PATH%"=="" (
-    if not exist "%STORAGE_PATH%" (
-        echo [ERROR] STORAGE_PATH directory does not exist: %STORAGE_PATH%
-        echo [ERROR] Please create the directory or update your .env file
-        exit /b 1
+    set "STORAGE_SETTING=%STORAGE_PATH%"
+) else if defined STORAGE_PATH (
+    set "STORAGE_SETTING="
+) else if exist "%PROJECT_DIR%\.env" (
+    for /f "usebackq tokens=1,* delims==" %%A in (`findstr /R /C:"^[ ]*STORAGE_PATH=" "%PROJECT_DIR%\.env"`) do (
+        set "STORAGE_SETTING=%%B"
     )
-    echo [SUCCESS] STORAGE_PATH is valid: %STORAGE_PATH%
+)
+
+if "!STORAGE_SETTING!"=="__MISSING__" (
+    echo [ERROR] STORAGE_PATH must be set in .env
+    echo [ERROR] Use an absolute directory path, or STORAGE_PATH= (empty) for local dev only
+    exit /b 1
+)
+if "!STORAGE_SETTING!"=="" (
+    echo [WARNING] STORAGE_PATH is empty - path validation disabled (local development only)
+) else if not exist "!STORAGE_SETTING!" (
+    echo [ERROR] STORAGE_PATH directory does not exist: !STORAGE_SETTING!
+    echo [ERROR] Please create the directory or update your .env file
+    exit /b 1
 ) else (
-    echo [WARNING] STORAGE_PATH not set - path validation is disabled
+    echo [SUCCESS] STORAGE_PATH is valid: !STORAGE_SETTING!
 )
 goto :eof
 

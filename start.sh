@@ -19,10 +19,10 @@ show_help() {
     echo "  --python-version VER   Use specific Python version (e.g., 3.13, 3.12)"
     echo ""
     echo "Environment variables:"
-    echo "  HOST             Server host (default: 0.0.0.0)"
+    echo "  HOST             Server host (default: 127.0.0.1)"
     echo "  PORT             Server port (default: 8000)"
     echo "  PYTHON_VERSION   Specific Python version to use (e.g., 3.13, 3.12)"
-    echo "  STORAGE_PATH     Path to data storage directory"
+    echo "  STORAGE_PATH     Required in .env — directory path or empty to disable validation"
     echo "  CONDA_ENV_NAME   Conda environment name to use (default: metadata-editor)"
     echo ""
     echo "Python Environment Detection (in priority order):"
@@ -37,7 +37,7 @@ show_help() {
     echo "  $0                                       # Start in background (default)"
     echo "  $0 --foreground                          # Start in foreground for debugging"
     echo "  ./stop.sh && $0 --clear-jobs             # Stop, clear queued/finished jobs, restart fresh"
-    echo "  HOST=127.0.0.1 $0                       # Start on localhost only"
+    echo "  HOST=0.0.0.0 $0                         # Bind on all interfaces (advanced)"
     echo "  PORT=8000 $0                            # Start on port 8000"
     echo "  CONDA_ENV_NAME=myenv $0                 # Use a custom conda environment"
     echo "  $0 --python-version 3.13                # Use Python 3.13 specifically"
@@ -60,7 +60,7 @@ VENV_DIR="$PROJECT_DIR/.venv"
 MAIN_FILE="$PROJECT_DIR/main.py"
 PID_FILE="$PROJECT_DIR/logs/app.pid"
 LOG_FILE="$PROJECT_DIR/logs/app.log"
-DEFAULT_HOST="0.0.0.0"
+DEFAULT_HOST="127.0.0.1"
 DEFAULT_PORT="8000"
 
 # Python version configuration
@@ -364,6 +364,19 @@ check_dependencies() {
     print_success "All dependencies are available"
 }
 
+# Resolve STORAGE_PATH from shell env or .env (returns __MISSING__ if absent)
+resolve_storage_path_setting() {
+    if [ -n "${STORAGE_PATH+set}" ]; then
+        printf '%s' "$STORAGE_PATH"
+        return 0
+    fi
+    if [ -f "$PROJECT_DIR/.env" ] && grep -qE '^[[:space:]]*STORAGE_PATH=' "$PROJECT_DIR/.env"; then
+        grep -E '^[[:space:]]*STORAGE_PATH=' "$PROJECT_DIR/.env" | tail -1 | cut -d= -f2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr -d '"' | tr -d "'"
+        return 0
+    fi
+    printf '%s' "__MISSING__"
+}
+
 # Function to check environment configuration
 check_env_config() {
     print_status "Checking environment configuration..."
@@ -372,20 +385,24 @@ check_env_config() {
     if [ -f "$PROJECT_DIR/.env" ]; then
         print_success "Found .env configuration file"
     else
-        print_warning "No .env file found - using default configuration"
-        print_warning "You can create a .env file with custom settings"
+        print_warning "No .env file found - copy .env.example to .env before starting"
     fi
     
-    # Check STORAGE_PATH if set
-    if [ -n "$STORAGE_PATH" ]; then
-        if [ ! -d "$STORAGE_PATH" ]; then
-            print_error "STORAGE_PATH directory does not exist: $STORAGE_PATH"
-            print_error "Please create the directory or update your .env file"
-            exit 1
-        fi
-        print_success "STORAGE_PATH is valid: $STORAGE_PATH"
+    local storage_setting
+    storage_setting="$(resolve_storage_path_setting)"
+    if [ "$storage_setting" = "__MISSING__" ]; then
+        print_error "STORAGE_PATH must be set in .env"
+        print_error "Use an absolute directory path, or STORAGE_PATH= (empty) for local dev only"
+        exit 1
+    fi
+    if [ -z "$storage_setting" ]; then
+        print_warning "STORAGE_PATH is empty - path validation disabled (local development only)"
+    elif [ ! -d "$storage_setting" ]; then
+        print_error "STORAGE_PATH directory does not exist: $storage_setting"
+        print_error "Please create the directory or update your .env file"
+        exit 1
     else
-        print_warning "STORAGE_PATH not set - path validation is disabled"
+        print_success "STORAGE_PATH is valid: $storage_setting"
     fi
 }
 

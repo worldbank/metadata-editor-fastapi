@@ -32,7 +32,7 @@ WorkingDirectory=/opt/metadata-editor
 #   /root/miniconda3/envs/metadata-editor/bin/python  (root installs - not recommended)
 ExecStart=/opt/miniconda3/envs/metadata-editor/bin/python \
     -m uvicorn main:app \
-    --host 0.0.0.0 \
+    --host 127.0.0.1 \
     --port 8000 \
     --log-level info
 

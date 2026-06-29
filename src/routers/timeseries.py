@@ -67,6 +67,7 @@ from ..utils.timeseries_utils import (
 	validate_dsd_columns_in_csv_headers,
 )
 from src.job_queue import enqueue_fifo_job
+from src.utils.path_security import ensure_safe_path, ensure_safe_path_http, is_safe_path
 from ..utils.timeseries_ts_derived import (
 	assert_staging_time_period_matches_implied_freq,
 	build_derived_expressions,
@@ -85,6 +86,10 @@ timeseries_service = TimeseriesService(_default_db_path)
 
 def get_timeseries_service() -> TimeseriesService:
 	return timeseries_service
+
+
+def _require_safe_csv_path(csv_path: str) -> None:
+	ensure_safe_path_http(csv_path, label="csv_path")
 
 
 def _read_csv_headers_or_raise(csv_path: str, delimiter: str) -> list:
@@ -262,8 +267,6 @@ async def _enqueue_replace_from_csv(
 
 def _validate_indicator_archive_csv_path(project_id: str, output_csv_path: str) -> str:
 	"""Ensure output path is editor data/indicator_data.csv under STORAGE_PATH."""
-	from main import is_safe_path
-
 	if not output_csv_path or not str(output_csv_path).strip():
 		raise HTTPException(status_code=400, detail="output_csv_path is required")
 
@@ -764,6 +767,7 @@ async def import_timeseries_table_queue(
 	if not request.project_id.isdigit():
 		raise HTTPException(status_code=400, detail="project_id must be numeric")
 
+	_require_safe_csv_path(request.csv_path)
 	if not os.path.exists(request.csv_path):
 		raise HTTPException(status_code=404, detail=f"File not found: {request.csv_path}")
 
@@ -815,6 +819,7 @@ async def import_indicator_timeseries_queue(
 	if not request.project_id.isdigit():
 		raise HTTPException(status_code=400, detail="project_id must be numeric")
 
+	_require_safe_csv_path(request.csv_path)
 	if not os.path.exists(request.csv_path):
 		raise HTTPException(status_code=404, detail=f"File not found: {request.csv_path}")
 
@@ -855,6 +860,7 @@ async def import_indicator_staging_queue(
 	if not request.project_id.isdigit():
 		raise HTTPException(status_code=400, detail="project_id must be numeric")
 
+	_require_safe_csv_path(request.csv_path)
 	if not os.path.exists(request.csv_path):
 		raise HTTPException(status_code=404, detail=f"File not found: {request.csv_path}")
 
@@ -1103,6 +1109,7 @@ async def indicator_csv_distinct(
 	"""
 	if not project_id.isdigit():
 		raise HTTPException(status_code=400, detail="project_id must be numeric")
+	_require_safe_csv_path(csv_path)
 	if not os.path.isfile(csv_path):
 		raise HTTPException(status_code=400, detail=f"CSV file not found: {csv_path}")
 
@@ -1133,6 +1140,7 @@ async def indicator_csv_validate_headers(
 	"""Validate CSV header row against expected DSD columns (exact set, case-insensitive)."""
 	if not project_id.isdigit():
 		raise HTTPException(status_code=400, detail="project_id must be numeric")
+	_require_safe_csv_path(csv_path)
 	if not os.path.isfile(csv_path):
 		raise HTTPException(status_code=400, detail=f"CSV file not found: {csv_path}")
 
@@ -1161,6 +1169,7 @@ async def indicator_replace_from_csv_queue(
 	"""
 	if not request.project_id.isdigit():
 		raise HTTPException(status_code=400, detail="project_id must be numeric")
+	_require_safe_csv_path(request.csv_path)
 	if not os.path.isfile(request.csv_path):
 		raise HTTPException(status_code=400, detail=f"CSV file not found: {request.csv_path}")
 
@@ -2140,6 +2149,7 @@ async def process_timeseries_import_job(
 	app.jobs[jobid]["status"] = "processing"
 
 	try:
+		ensure_safe_path(request.csv_path, label="csv_path")
 		result = _duckdb_import_csv_table(
 			service.get_db_path(),
 			request.project_id,
@@ -2185,6 +2195,7 @@ async def process_staging_import_job(
 	app.jobs[jobid]["status"] = "processing"
 
 	try:
+		ensure_safe_path(request.csv_path, label="csv_path")
 		result = _duckdb_import_csv_table(
 			service.get_db_path(),
 			request.project_id,
@@ -2371,6 +2382,7 @@ async def process_replace_from_csv_job(
 	schema_name = build_project_schema_name(request.project_id)
 
 	try:
+		ensure_safe_path(request.csv_path, label="csv_path")
 		headers = _read_csv_headers_or_raise(request.csv_path, request.delimiter)
 		names = [c.name for c in request.expected_columns]
 		ok, msg, _, _ = validate_csv_headers_exact_set(headers, names)

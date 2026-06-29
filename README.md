@@ -1,6 +1,6 @@
 # Metadata Editor – FastAPI Backend Service
 
-A FastAPI-based RESTful service that processes data files (Stata, SPSS, CSV) to support the [Metadata Editor](https://github.com/worldbank/metadata-editor).
+A FastAPI-based RESTful service that processes data files (Stata, SPSS, CSV) to support the [Metadata Editor](https://github.com/worldbank/metadata-editor). It is designed to run on the same machine as the Metadata Editor and is not intended for public internet exposure.
 
 ## ✨ Features
 
@@ -17,8 +17,24 @@ A FastAPI-based RESTful service that processes data files (Stata, SPSS, CSV) to 
 
 This service is designed to be used in conjunction with the [Metadata Editor web application](https://github.com/worldbank/metadata-editor), enhancing its ability to automate data processing and metadata generation workflows.
 
+## Security model
+
+This FastAPI service is a **local processing worker**, not a public API. It reads and writes files on paths supplied by the Metadata Editor (Stata/SPSS/CSV conversion, data dictionaries, geospatial metadata, and similar tasks).
+
+**Do not expose this service to untrusted networks.** Run it on the same machine as the Metadata Editor and bind to localhost (`127.0.0.1`).
+
+| Control | Recommendation |
+|---------|----------------|
+| Network | `HOST=127.0.0.1` (default). Use `0.0.0.0` only on trusted internal networks with a firewall. |
+| `STORAGE_PATH` | **Required in `.env`** — set an absolute directory path, or `STORAGE_PATH=` (empty) to disable path validation for local development only. |
+| OS permissions | Run under a dedicated service account with access limited to editor data folders. |
+
+Copy `.env.example` to `.env` before starting. The application **will not start** unless `STORAGE_PATH` is explicitly set in `.env`.
+
+For Linux systemd deployment, see [deploy/linux/README.md](deploy/linux/README.md).
 
 ## Requirements
+
 Python 3.11 or later
 
 ## Dependencies
@@ -83,7 +99,8 @@ See the [Metadata Reviewer Installation Guide](README-reviewer.md) for full setu
 
 ### If using Option 1 (Direct Installation):
 ```bash
-python3 -m uvicorn main:app --host 0.0.0.0 --port 8000
+cp .env.example .env   # edit STORAGE_PATH and other settings
+python3 -m uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 
 ### If using Option 2 (Virtual Environment):
@@ -92,7 +109,8 @@ python3 -m uvicorn main:app --host 0.0.0.0 --port 8000
 source venv/bin/activate
 
 # Start the application
-python3 -m uvicorn main:app --host 0.0.0.0 --port 8000
+cp .env.example .env   # if you have not already
+python3 -m uvicorn main:app --host 127.0.0.1 --port 8000
 
 # When done, deactivate the virtual environment
 deactivate
@@ -121,24 +139,37 @@ stop.bat --force  :: force kill if graceful stop fails
 start.bat --help  :: see all options
 ```
 
-The application will be available at `http://localhost:8000`
+The application will be available at `http://127.0.0.1:8000` (localhost only by default).
 
 ## Configuration
 
-### Storage Path Configuration
-The `STORAGE_PATH` should point to the folder used by the metadata editor for data storage. 
+### Environment file
 
 ```bash
-# Set the path to your data files directory
-STORAGE_PATH=/path/to/your/metadata-editor/datafiles
+cp .env.example .env
 ```
 
-**Important Notes:**
-- **Permissions**: The application must have read/write access to this directory
-- **Path Format**: Use absolute paths (e.g., `/Volumes/webdev/data` on macOS/Linux, `C:\data` on Windows)
-- **Validation**: The application will fail to start if the path doesn't exist or is inaccessible
+### Storage path (`STORAGE_PATH`)
 
+`STORAGE_PATH` must be **explicitly set** in `.env`. The application will refuse to start if it is missing.
 
+| Value | Behavior |
+|-------|----------|
+| Absolute directory path | Restricts file operations on endpoints that read or write user-supplied paths |
+| Empty (`STORAGE_PATH=`) | Disables path validation — **local development only** |
+
+```bash
+# Production — point at the metadata editor data folder
+STORAGE_PATH=/path/to/your/metadata-editor/datafiles
+
+# Local development only — disable path validation
+# STORAGE_PATH=
+```
+
+**Notes:**
+- Use **absolute paths** (e.g. `/var/www/metadata-editor/datafiles` on Linux, `C:\inetpub\metadata-editor\datafiles` on Windows)
+- The directory must exist when a path is set; the application validates this at startup
+- The service account must have read/write access to this directory
 ### Logging Configuration
 
 Copy variables from `logging_config_example.env` into your `.env` file and adjust as needed.

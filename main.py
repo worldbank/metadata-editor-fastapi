@@ -60,16 +60,13 @@ MAX_JOB_AGE_HOURS = int(os.getenv("MAX_JOB_AGE_HOURS", "24"))
 # limit the number of jobs in memory
 MAX_MEMORY_JOBS = int(os.getenv("MAX_MEMORY_JOBS", "500"))
 
-storage_path = os.getenv("STORAGE_PATH")
-if storage_path is not None:
-    if not os.path.exists(storage_path):
-        raise ValueError("STORAGE_PATH does not exist: " + storage_path)
-    else:
-        logger.debug("STORAGE_PATH: %s", storage_path)
-else:
-    logger.debug("STORAGE_PATH not set - path validation disabled")
-
-
+from src.utils.path_security import (
+    ensure_safe_path,
+    ensure_safe_paths,
+    ensure_safe_path_http,
+    ensure_safe_paths_http,
+    is_safe_path,
+)
 
 #class Settings(BaseSettings):
 #    storage_path: str = "data"    
@@ -190,13 +187,13 @@ async def version():
 
 @app.post("/metadata")
 async def metadata(fileinfo: FileInfo):
-
+    ensure_safe_path_http(fileinfo.file_path, label="file_path")
     datadict=DataDictionary()
     return datadict.get_metadata(fileinfo)
 
 @app.post("/name-labels")
 async def name_labels(fileinfo: FileInfo):
-
+    ensure_safe_path_http(fileinfo.file_path, label="file_path")
     datadict=DataDictionary()
     return datadict.get_name_labels(fileinfo)
 
@@ -204,7 +201,7 @@ async def name_labels(fileinfo: FileInfo):
 
 @app.post("/data-dictionary")
 async def data_dictionary(fileinfo: FileInfo):
-
+    ensure_safe_path_http(fileinfo.file_path, label="file_path")
     datadict=DataDictionary()
     return datadict.get_data_dictionary(fileinfo)
     
@@ -212,6 +209,7 @@ async def data_dictionary(fileinfo: FileInfo):
 
 @app.post("/data-dictionary-variable")
 async def data_dictionary_variable(params: DictParams):
+    ensure_safe_path_http(params.file_path, label="file_path")
 
     file_ext=os.path.splitext(params.file_path)[1]
 
@@ -226,7 +224,10 @@ async def data_dictionary_variable(params: DictParams):
 
 @app.post("/generate-csv")
 async def write_csv(fileinfo: FileInfo):
-    return write_csv_file(fileinfo)
+    try:
+        return write_csv_file(fileinfo)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     
 
 
@@ -243,11 +244,7 @@ def convert_mixed_column(series):
     return series.apply(try_convert)
 
 def write_csv_file(fileinfo: FileInfo):
-    
-    # Check if the file path is safe
-    if not is_safe_path(fileinfo.file_path):
-        raise HTTPException(status_code=400, detail="Invalid file path: " + fileinfo.file_path)
-
+    ensure_safe_path(fileinfo.file_path, label="file_path")
 
     file_ext=os.path.splitext(fileinfo.file_path)[1]
     folder_path=os.path.dirname(fileinfo.file_path)
@@ -329,10 +326,7 @@ def remove_columns_from_csv(params: RemoveColumnsParams) -> Dict[str, Any]:
     Read a CSV, drop the given columns, and write to output_path.
     If output_path already exists, it is overwritten. Caller is responsible for replacing the original file if desired.
     """
-    if not is_safe_path(params.file_path):
-        raise ValueError("Invalid file path: " + params.file_path)
-    if not is_safe_path(params.output_path):
-        raise ValueError("Invalid output path: " + params.output_path)
+    ensure_safe_paths(params.file_path, params.output_path, label="file_path")
     if not os.path.exists(params.file_path):
         raise FileNotFoundError("File not found: " + params.file_path)
 
@@ -633,7 +627,8 @@ async def shutdown_tasks():
 
 
 @app.post("/data-dictionary-queue")
-async def data_dictionary_queue(params: DictParams):    
+async def data_dictionary_queue(params: DictParams):
+    ensure_safe_path_http(params.file_path, label="file_path")
     jobid='job-' + str(time.time())
     current_time = datetime.datetime.now().isoformat()
     app.jobs[jobid]={
@@ -707,10 +702,7 @@ async def write_csv_file_callback(jobid, fileinfo: FileInfo):
 @app.post("/remove-csv-columns-queue")
 async def remove_csv_columns_queue(params: RemoveColumnsParams):
     """Queue a job to remove specified columns from a CSV and write the result to a new file. If output_path exists, it is overwritten."""
-    if not is_safe_path(params.file_path):
-        raise HTTPException(status_code=400, detail="Invalid file path: " + params.file_path)
-    if not is_safe_path(params.output_path):
-        raise HTTPException(status_code=400, detail="Invalid output path: " + params.output_path)
+    ensure_safe_paths_http(params.file_path, params.output_path, label="file_path")
     if not os.path.exists(params.file_path):
         raise HTTPException(status_code=404, detail="File not found: " + params.file_path)
     if os.path.splitext(params.file_path)[1].lower() != ".csv":
@@ -757,6 +749,7 @@ async def remove_columns_from_csv_callback(jobid, params: RemoveColumnsParams):
     
 
 async def write_data_dictionary_file(jobid, params: DictParams):
+    ensure_safe_path(params.file_path, label="file_path")
     loop = asyncio.get_running_loop()
     file_ext=os.path.splitext(params.file_path)[1]
 
@@ -797,6 +790,7 @@ async def write_data_dictionary_file(jobid, params: DictParams):
 
 @app.post("/export-data-queue")
 async def export_data_queue(params: DictParams):
+    ensure_safe_path_http(params.file_path, label="file_path")
     #print ("export_data_queue", params)
     jobid='job-' + str(time.time())
     current_time = datetime.datetime.now().isoformat()
@@ -822,6 +816,7 @@ async def export_data_queue(params: DictParams):
 @app.post("/process-microdata-queue")
 async def process_microdata_queue(params: DataProcessingParams):
     """Unified endpoint to process microdata files (CSV generation + data dictionary)"""
+    ensure_safe_path_http(params.file_path, label="file_path")
     jobid='job-' + str(time.time())
     current_time = datetime.datetime.now().isoformat()
     app.jobs[jobid]={
@@ -844,6 +839,7 @@ async def process_microdata_queue(params: DataProcessingParams):
 
 
 async def export_data_file(jobid, params: DictParams):
+    ensure_safe_path(params.file_path, label="file_path")
     loop = asyncio.get_running_loop()
     file_ext=os.path.splitext(params.file_path)[1]
 
@@ -909,6 +905,7 @@ async def export_data_file(jobid, params: DictParams):
 
 async def process_microdata_file(jobid, params: DataProcessingParams):
     """Process microdata file with both CSV generation and data dictionary creation"""
+    ensure_safe_path(params.file_path, label="file_path")
     loop = asyncio.get_running_loop()
     app.jobs[jobid]["status"] = "processing"
     
@@ -1224,33 +1221,6 @@ def remove_jobs_folder():
         files = glob.glob(folder_path + '/*.json')
         for f in files:
             os.remove(f)
-
-
-
-def is_safe_path(file_path: str) -> bool:
-    """
-    Validate that the file path is within the storage directory.
-    If STORAGE_PATH is not set, path validation is disabled.
-
-    Args:
-        file_path (str): The target file path to validate.
-
-    Returns:
-        bool: True if the path is safe, False otherwise.
-    """
-    # Get the storage path from the environment variable
-    storage_path = os.getenv("STORAGE_PATH")
-
-    # If STORAGE_PATH is not set, skip path validation
-    if not storage_path:
-        return True
-
-    # Resolve and normalize paths
-    storage_path = os.path.abspath(os.path.normpath(storage_path))
-    target_path = os.path.abspath(os.path.normpath(file_path))
-
-    # Check if the target path is within the storage path
-    return target_path.startswith(storage_path)
 
 
 #if __name__ == "__main__":
