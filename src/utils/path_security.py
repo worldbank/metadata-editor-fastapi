@@ -60,40 +60,82 @@ def _canonical_path(path: str) -> str:
     return str(Path(path).resolve(strict=False))
 
 
-def is_safe_path(file_path: str) -> bool:
-    """Return True when file_path is allowed under STORAGE_PATH (or validation is disabled)."""
+def resolve_safe_path(path: str) -> str:
+    """Return canonical path when allowed under STORAGE_PATH; raise ValueError otherwise."""
+    canonical = _canonical_path(str(path).strip())
     if not PATH_VALIDATION_ENABLED or STORAGE_PATH is None:
-        return True
+        return canonical
 
     try:
-        target_path = _canonical_path(file_path)
         storage_root = _canonical_path(STORAGE_PATH)
-        common = os.path.commonpath([storage_root, target_path])
+        common = os.path.commonpath([storage_root, canonical])
     except (OSError, ValueError):
+        raise ValueError(path) from None
+
+    if common != storage_root:
+        raise ValueError(path)
+
+    return canonical
+
+
+def resolve_safe_path_http(path: str, *, label: str = "path") -> str:
+    """Return canonical path; raise HTTP 400 when outside STORAGE_PATH."""
+    try:
+        return resolve_safe_path(path)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid {label}: {path}") from None
+
+
+def resolve_safe_paths(*paths: str, label: str = "path") -> tuple[str, ...]:
+    """Resolve multiple paths; raise ValueError when any path is invalid."""
+    resolved: list[str] = []
+    for path in paths:
+        if path:
+            try:
+                resolved.append(resolve_safe_path(path))
+            except ValueError:
+                raise ValueError(f"Invalid {label}: {path}") from None
+        else:
+            resolved.append(path)
+    return tuple(resolved)
+
+
+def resolve_safe_paths_http(*paths: str, label: str = "path") -> tuple[str, ...]:
+    """Resolve multiple paths; raise HTTP 400 when any path is invalid."""
+    resolved: list[str] = []
+    for path in paths:
+        if path:
+            resolved.append(resolve_safe_path_http(path, label=label))
+        else:
+            resolved.append(path)
+    return tuple(resolved)
+
+
+def is_safe_path(file_path: str) -> bool:
+    """Return True when file_path is allowed under STORAGE_PATH (or validation is disabled)."""
+    try:
+        resolve_safe_path(file_path)
+        return True
+    except ValueError:
         return False
 
-    return common == storage_root
+
+def ensure_safe_path(path: str, *, label: str = "path") -> str:
+    """Validate path and return canonical form. Raises ValueError when invalid."""
+    try:
+        return resolve_safe_path(path)
+    except ValueError:
+        raise ValueError(f"Invalid {label}: {path}") from None
 
 
-def ensure_safe_path(path: str, *, label: str = "path") -> None:
-    """Raise ValueError when path is outside STORAGE_PATH."""
-    if not is_safe_path(path):
-        raise ValueError(f"Invalid {label}: {path}")
+def ensure_safe_paths(*paths: str, label: str = "path") -> tuple[str, ...]:
+    return resolve_safe_paths(*paths, label=label)
 
 
-def ensure_safe_paths(*paths: str, label: str = "path") -> None:
-    for path in paths:
-        if path:
-            ensure_safe_path(path, label=label)
+def ensure_safe_path_http(path: str, *, label: str = "path") -> str:
+    """Validate path and return canonical form. Raises HTTP 400 when invalid."""
+    return resolve_safe_path_http(path, label=label)
 
 
-def ensure_safe_path_http(path: str, *, label: str = "path") -> None:
-    """Raise HTTP 400 when path is outside STORAGE_PATH."""
-    if not is_safe_path(path):
-        raise HTTPException(status_code=400, detail=f"Invalid {label}: {path}")
-
-
-def ensure_safe_paths_http(*paths: str, label: str = "path") -> None:
-    for path in paths:
-        if path:
-            ensure_safe_path_http(path, label=label)
+def ensure_safe_paths_http(*paths: str, label: str = "path") -> tuple[str, ...]:
+    return resolve_safe_paths_http(*paths, label=label)

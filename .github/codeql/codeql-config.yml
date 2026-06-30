@@ -1,0 +1,3 @@
+name: metadata-editor-fastapi-codeql
+dataExtensions:
+  - path-injection.model.yml

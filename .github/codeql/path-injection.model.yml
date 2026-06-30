@@ -1,0 +1,7 @@
+extensions:
+  - addsTo:
+      pack: codeql/python-all
+      extensible: barrierModel
+    data:
+      - ["src.utils.path_security", "Member[resolve_safe_path].ReturnValue", "path-injection"]
+      - ["src.utils.path_security", "Member[resolve_safe_path_http].ReturnValue", "path-injection"]

@@ -61,11 +61,10 @@ MAX_JOB_AGE_HOURS = int(os.getenv("MAX_JOB_AGE_HOURS", "24"))
 MAX_MEMORY_JOBS = int(os.getenv("MAX_MEMORY_JOBS", "500"))
 
 from src.utils.path_security import (
-    ensure_safe_path,
-    ensure_safe_paths,
-    ensure_safe_path_http,
-    ensure_safe_paths_http,
-    is_safe_path,
+    resolve_safe_path,
+    resolve_safe_paths,
+    resolve_safe_path_http,
+    resolve_safe_paths_http,
 )
 
 #class Settings(BaseSettings):
@@ -187,31 +186,32 @@ async def version():
 
 @app.post("/metadata")
 async def metadata(fileinfo: FileInfo):
-    ensure_safe_path_http(fileinfo.file_path, label="file_path")
+    file_path = resolve_safe_path_http(fileinfo.file_path, label="file_path")
     datadict=DataDictionary()
-    return datadict.get_metadata(fileinfo)
+    return datadict.get_metadata(fileinfo.model_copy(update={"file_path": file_path}))
 
 @app.post("/name-labels")
 async def name_labels(fileinfo: FileInfo):
-    ensure_safe_path_http(fileinfo.file_path, label="file_path")
+    file_path = resolve_safe_path_http(fileinfo.file_path, label="file_path")
     datadict=DataDictionary()
-    return datadict.get_name_labels(fileinfo)
+    return datadict.get_name_labels(fileinfo.model_copy(update={"file_path": file_path}))
 
 
 
 @app.post("/data-dictionary")
 async def data_dictionary(fileinfo: FileInfo):
-    ensure_safe_path_http(fileinfo.file_path, label="file_path")
+    file_path = resolve_safe_path_http(fileinfo.file_path, label="file_path")
     datadict=DataDictionary()
-    return datadict.get_data_dictionary(fileinfo)
+    return datadict.get_data_dictionary(fileinfo.model_copy(update={"file_path": file_path}))
     
 
 
 @app.post("/data-dictionary-variable")
 async def data_dictionary_variable(params: DictParams):
-    ensure_safe_path_http(params.file_path, label="file_path")
+    file_path = resolve_safe_path_http(params.file_path, label="file_path")
+    params = params.model_copy(update={"file_path": file_path})
 
-    file_ext=os.path.splitext(params.file_path)[1]
+    file_ext=os.path.splitext(file_path)[1]
 
     if file_ext.lower() == '.csv':
         datadict=DataDictionaryCsv()
@@ -244,10 +244,11 @@ def convert_mixed_column(series):
     return series.apply(try_convert)
 
 def write_csv_file(fileinfo: FileInfo):
-    ensure_safe_path(fileinfo.file_path, label="file_path")
+    file_path = resolve_safe_path(fileinfo.file_path)
+    fileinfo = fileinfo.model_copy(update={"file_path": file_path})
 
-    file_ext=os.path.splitext(fileinfo.file_path)[1]
-    folder_path=os.path.dirname(fileinfo.file_path)
+    file_ext=os.path.splitext(file_path)[1]
+    folder_path=os.path.dirname(file_path)
 
 
     try:
@@ -326,33 +327,34 @@ def remove_columns_from_csv(params: RemoveColumnsParams) -> Dict[str, Any]:
     Read a CSV, drop the given columns, and write to output_path.
     If output_path already exists, it is overwritten. Caller is responsible for replacing the original file if desired.
     """
-    ensure_safe_paths(params.file_path, params.output_path, label="file_path")
-    if not os.path.exists(params.file_path):
-        raise FileNotFoundError("File not found: " + params.file_path)
+    file_path, output_path = resolve_safe_paths(params.file_path, params.output_path, label="file_path")
+    params = params.model_copy(update={"file_path": file_path, "output_path": output_path})
+    if not os.path.exists(file_path):
+        raise FileNotFoundError("File not found: " + file_path)
 
-    file_ext = os.path.splitext(params.file_path)[1].lower()
+    file_ext = os.path.splitext(file_path)[1].lower()
     if file_ext != ".csv":
-        raise ValueError("Source file must be a CSV: " + params.file_path)
+        raise ValueError("Source file must be a CSV: " + file_path)
 
-    output_dir = os.path.dirname(params.output_path)
+    output_dir = os.path.dirname(output_path)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
 
-    df = pd.read_csv(params.file_path)
+    df = pd.read_csv(file_path)
     original_columns = list(df.columns)
     # Drop only columns that exist; ignore missing names
     to_drop = [c for c in params.column_names if c in df.columns]
     df = df.drop(columns=to_drop, errors="ignore")
-    df.to_csv(params.output_path, index=False)
+    df.to_csv(output_path, index=False)
 
     return {
         "status": "success",
-        "output_path": params.output_path,
+        "output_path": output_path,
         "rows": len(df),
         "columns_remaining": len(df.columns),
         "columns_removed": to_drop,
         "columns_requested_not_found": [c for c in params.column_names if c not in original_columns],
-        "output_file_size": DataUtils.sizeof_fmt(os.path.getsize(params.output_path)),
+        "output_file_size": DataUtils.sizeof_fmt(os.path.getsize(output_path)),
     }
 
 
@@ -628,7 +630,8 @@ async def shutdown_tasks():
 
 @app.post("/data-dictionary-queue")
 async def data_dictionary_queue(params: DictParams):
-    ensure_safe_path_http(params.file_path, label="file_path")
+    file_path = resolve_safe_path_http(params.file_path, label="file_path")
+    params = params.model_copy(update={"file_path": file_path})
     jobid='job-' + str(time.time())
     current_time = datetime.datetime.now().isoformat()
     app.jobs[jobid]={
@@ -702,11 +705,12 @@ async def write_csv_file_callback(jobid, fileinfo: FileInfo):
 @app.post("/remove-csv-columns-queue")
 async def remove_csv_columns_queue(params: RemoveColumnsParams):
     """Queue a job to remove specified columns from a CSV and write the result to a new file. If output_path exists, it is overwritten."""
-    ensure_safe_paths_http(params.file_path, params.output_path, label="file_path")
-    if not os.path.exists(params.file_path):
-        raise HTTPException(status_code=404, detail="File not found: " + params.file_path)
-    if os.path.splitext(params.file_path)[1].lower() != ".csv":
-        raise HTTPException(status_code=400, detail="Source file must be a CSV: " + params.file_path)
+    file_path, output_path = resolve_safe_paths_http(params.file_path, params.output_path, label="file_path")
+    params = params.model_copy(update={"file_path": file_path, "output_path": output_path})
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found: " + file_path)
+    if os.path.splitext(file_path)[1].lower() != ".csv":
+        raise HTTPException(status_code=400, detail="Source file must be a CSV: " + file_path)
 
     jobid = "job-" + str(time.time())
     current_time = datetime.datetime.now().isoformat()
@@ -749,9 +753,10 @@ async def remove_columns_from_csv_callback(jobid, params: RemoveColumnsParams):
     
 
 async def write_data_dictionary_file(jobid, params: DictParams):
-    ensure_safe_path(params.file_path, label="file_path")
+    file_path = resolve_safe_path(params.file_path)
+    params = params.model_copy(update={"file_path": file_path})
     loop = asyncio.get_running_loop()
-    file_ext=os.path.splitext(params.file_path)[1]
+    file_ext=os.path.splitext(file_path)[1]
 
     if file_ext.lower() == '.csv':
         datadict=DataDictionaryCsv()
@@ -790,7 +795,8 @@ async def write_data_dictionary_file(jobid, params: DictParams):
 
 @app.post("/export-data-queue")
 async def export_data_queue(params: DictParams):
-    ensure_safe_path_http(params.file_path, label="file_path")
+    file_path = resolve_safe_path_http(params.file_path, label="file_path")
+    params = params.model_copy(update={"file_path": file_path})
     #print ("export_data_queue", params)
     jobid='job-' + str(time.time())
     current_time = datetime.datetime.now().isoformat()
@@ -816,7 +822,8 @@ async def export_data_queue(params: DictParams):
 @app.post("/process-microdata-queue")
 async def process_microdata_queue(params: DataProcessingParams):
     """Unified endpoint to process microdata files (CSV generation + data dictionary)"""
-    ensure_safe_path_http(params.file_path, label="file_path")
+    file_path = resolve_safe_path_http(params.file_path, label="file_path")
+    params = params.model_copy(update={"file_path": file_path})
     jobid='job-' + str(time.time())
     current_time = datetime.datetime.now().isoformat()
     app.jobs[jobid]={
@@ -839,9 +846,10 @@ async def process_microdata_queue(params: DataProcessingParams):
 
 
 async def export_data_file(jobid, params: DictParams):
-    ensure_safe_path(params.file_path, label="file_path")
+    file_path = resolve_safe_path(params.file_path)
+    params = params.model_copy(update={"file_path": file_path})
     loop = asyncio.get_running_loop()
-    file_ext=os.path.splitext(params.file_path)[1]
+    file_ext=os.path.splitext(file_path)[1]
 
     exportDF=ExportDatafile()    
     app.jobs[jobid]["status"]="processing"
@@ -905,7 +913,8 @@ async def export_data_file(jobid, params: DictParams):
 
 async def process_microdata_file(jobid, params: DataProcessingParams):
     """Process microdata file with both CSV generation and data dictionary creation"""
-    ensure_safe_path(params.file_path, label="file_path")
+    file_path = resolve_safe_path(params.file_path)
+    params = params.model_copy(update={"file_path": file_path})
     loop = asyncio.get_running_loop()
     app.jobs[jobid]["status"] = "processing"
     

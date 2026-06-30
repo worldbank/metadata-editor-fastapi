@@ -67,7 +67,7 @@ from ..utils.timeseries_utils import (
 	validate_dsd_columns_in_csv_headers,
 )
 from src.job_queue import enqueue_fifo_job
-from src.utils.path_security import ensure_safe_path, ensure_safe_path_http, is_safe_path
+from src.utils.path_security import resolve_safe_path, resolve_safe_path_http
 from ..utils.timeseries_ts_derived import (
 	assert_staging_time_period_matches_implied_freq,
 	build_derived_expressions,
@@ -86,10 +86,6 @@ timeseries_service = TimeseriesService(_default_db_path)
 
 def get_timeseries_service() -> TimeseriesService:
 	return timeseries_service
-
-
-def _require_safe_csv_path(csv_path: str) -> None:
-	ensure_safe_path_http(csv_path, label="csv_path")
 
 
 def _read_csv_headers_or_raise(csv_path: str, delimiter: str) -> list:
@@ -270,12 +266,7 @@ def _validate_indicator_archive_csv_path(project_id: str, output_csv_path: str) 
 	if not output_csv_path or not str(output_csv_path).strip():
 		raise HTTPException(status_code=400, detail="output_csv_path is required")
 
-	path = os.path.abspath(os.path.normpath(str(output_csv_path).strip()))
-	if not is_safe_path(path):
-		raise HTTPException(
-			status_code=400,
-			detail="output_csv_path must be under STORAGE_PATH",
-		)
+	path = resolve_safe_path_http(output_csv_path, label="output_csv_path")
 	if os.path.basename(path) != "indicator_data.csv":
 		raise HTTPException(
 			status_code=400,
@@ -767,11 +758,12 @@ async def import_timeseries_table_queue(
 	if not request.project_id.isdigit():
 		raise HTTPException(status_code=400, detail="project_id must be numeric")
 
-	_require_safe_csv_path(request.csv_path)
-	if not os.path.exists(request.csv_path):
-		raise HTTPException(status_code=404, detail=f"File not found: {request.csv_path}")
+	csv_path = resolve_safe_path_http(request.csv_path, label="csv_path")
+	request = request.model_copy(update={"csv_path": csv_path})
+	if not os.path.exists(csv_path):
+		raise HTTPException(status_code=404, detail=f"File not found: {csv_path}")
 
-	_read_csv_headers_or_raise(request.csv_path, request.delimiter)
+	_read_csv_headers_or_raise(csv_path, request.delimiter)
 
 	# Check if table already exists before queuing
 	schema_name = build_project_schema_name(request.project_id)
@@ -819,11 +811,12 @@ async def import_indicator_timeseries_queue(
 	if not request.project_id.isdigit():
 		raise HTTPException(status_code=400, detail="project_id must be numeric")
 
-	_require_safe_csv_path(request.csv_path)
-	if not os.path.exists(request.csv_path):
-		raise HTTPException(status_code=404, detail=f"File not found: {request.csv_path}")
+	csv_path = resolve_safe_path_http(request.csv_path, label="csv_path")
+	request = request.model_copy(update={"csv_path": csv_path})
+	if not os.path.exists(csv_path):
+		raise HTTPException(status_code=404, detail=f"File not found: {csv_path}")
 
-	headers = _read_csv_headers_or_raise(request.csv_path, request.delimiter)
+	headers = _read_csv_headers_or_raise(csv_path, request.delimiter)
 
 	if request.dsd_columns:
 		names = [c.name for c in request.dsd_columns]
@@ -833,7 +826,7 @@ async def import_indicator_timeseries_queue(
 
 	import_body = TimeseriesImportRequest(
 		project_id=request.project_id,
-		csv_path=request.csv_path,
+		csv_path=csv_path,
 		delimiter=request.delimiter,
 		replace=True,
 	)
@@ -860,11 +853,12 @@ async def import_indicator_staging_queue(
 	if not request.project_id.isdigit():
 		raise HTTPException(status_code=400, detail="project_id must be numeric")
 
-	_require_safe_csv_path(request.csv_path)
-	if not os.path.exists(request.csv_path):
-		raise HTTPException(status_code=404, detail=f"File not found: {request.csv_path}")
+	csv_path = resolve_safe_path_http(request.csv_path, label="csv_path")
+	request = request.model_copy(update={"csv_path": csv_path})
+	if not os.path.exists(csv_path):
+		raise HTTPException(status_code=404, detail=f"File not found: {csv_path}")
 
-	headers = _read_csv_headers_or_raise(request.csv_path, request.delimiter)
+	headers = _read_csv_headers_or_raise(csv_path, request.delimiter)
 
 	if request.dsd_columns:
 		names = [c.name for c in request.dsd_columns]
@@ -874,7 +868,7 @@ async def import_indicator_staging_queue(
 
 	import_body = TimeseriesImportRequest(
 		project_id=request.project_id,
-		csv_path=request.csv_path,
+		csv_path=csv_path,
 		delimiter=request.delimiter,
 		replace=True,
 	)
@@ -1109,7 +1103,7 @@ async def indicator_csv_distinct(
 	"""
 	if not project_id.isdigit():
 		raise HTTPException(status_code=400, detail="project_id must be numeric")
-	_require_safe_csv_path(csv_path)
+	csv_path = resolve_safe_path_http(csv_path, label="csv_path")
 	if not os.path.isfile(csv_path):
 		raise HTTPException(status_code=400, detail=f"CSV file not found: {csv_path}")
 
@@ -1140,7 +1134,7 @@ async def indicator_csv_validate_headers(
 	"""Validate CSV header row against expected DSD columns (exact set, case-insensitive)."""
 	if not project_id.isdigit():
 		raise HTTPException(status_code=400, detail="project_id must be numeric")
-	_require_safe_csv_path(csv_path)
+	csv_path = resolve_safe_path_http(csv_path, label="csv_path")
 	if not os.path.isfile(csv_path):
 		raise HTTPException(status_code=400, detail=f"CSV file not found: {csv_path}")
 
@@ -1169,11 +1163,12 @@ async def indicator_replace_from_csv_queue(
 	"""
 	if not request.project_id.isdigit():
 		raise HTTPException(status_code=400, detail="project_id must be numeric")
-	_require_safe_csv_path(request.csv_path)
-	if not os.path.isfile(request.csv_path):
-		raise HTTPException(status_code=400, detail=f"CSV file not found: {request.csv_path}")
+	csv_path = resolve_safe_path_http(request.csv_path, label="csv_path")
+	request = request.model_copy(update={"csv_path": csv_path})
+	if not os.path.isfile(csv_path):
+		raise HTTPException(status_code=400, detail=f"CSV file not found: {csv_path}")
 
-	headers = _read_csv_headers_or_raise(request.csv_path, request.delimiter)
+	headers = _read_csv_headers_or_raise(csv_path, request.delimiter)
 	names = [c.name for c in request.expected_columns]
 	ok, msg, _, _ = validate_csv_headers_exact_set(headers, names)
 	if not ok:
@@ -2149,11 +2144,11 @@ async def process_timeseries_import_job(
 	app.jobs[jobid]["status"] = "processing"
 
 	try:
-		ensure_safe_path(request.csv_path, label="csv_path")
+		csv_path = resolve_safe_path(request.csv_path)
 		result = _duckdb_import_csv_table(
 			service.get_db_path(),
 			request.project_id,
-			request.csv_path,
+			csv_path,
 			request.delimiter,
 			request.replace,
 			build_table_name(request.project_id),
@@ -2195,11 +2190,11 @@ async def process_staging_import_job(
 	app.jobs[jobid]["status"] = "processing"
 
 	try:
-		ensure_safe_path(request.csv_path, label="csv_path")
+		csv_path = resolve_safe_path(request.csv_path)
 		result = _duckdb_import_csv_table(
 			service.get_db_path(),
 			request.project_id,
-			request.csv_path,
+			csv_path,
 			request.delimiter,
 			True,
 			STAGING_TABLE_NAME,
@@ -2382,8 +2377,8 @@ async def process_replace_from_csv_job(
 	schema_name = build_project_schema_name(request.project_id)
 
 	try:
-		ensure_safe_path(request.csv_path, label="csv_path")
-		headers = _read_csv_headers_or_raise(request.csv_path, request.delimiter)
+		csv_path = resolve_safe_path(request.csv_path)
+		headers = _read_csv_headers_or_raise(csv_path, request.delimiter)
 		names = [c.name for c in request.expected_columns]
 		ok, msg, _, _ = validate_csv_headers_exact_set(headers, names)
 		if not ok:
@@ -2397,7 +2392,7 @@ async def process_replace_from_csv_job(
 		_duckdb_import_csv_table(
 			db_path,
 			request.project_id,
-			request.csv_path,
+			csv_path,
 			request.delimiter,
 			True,
 			STAGING_TABLE_NAME,
