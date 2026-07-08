@@ -11,7 +11,11 @@ from src.VarInfo import VarInfo
 from src.DictParams import DictParams
 from src.DataUtils import DataUtils
 from src.DataDictionaryWeightValidation import validate_weight_columns_for_descr_stats
-from src.weighted_freq_key import weighted_freq_category_key
+from src.weighted_freq_key import (
+    weighted_freq_category_key,
+    sort_category_items,
+    merge_category_value_counts,
+)
 from statsmodels.stats.weightstats import DescrStatsW
 from fastapi import HTTPException
 from types import SimpleNamespace
@@ -530,7 +534,7 @@ class DataDictionaryCsv:
         is_user_categorical = variable_name in categorical_list
 
         #get value counts [freq] by each unique value
-        categories_calc=df[variable_name].value_counts()
+        categories_calc=merge_category_value_counts(df[variable_name].value_counts())
 
         #check if meta field has value labels
         if (variable_name in meta.variable_value_labels):
@@ -539,12 +543,14 @@ class DataDictionaryCsv:
             logger.debug(f"Variable {variable_name} has value labels, treating as categorical")
         elif is_user_categorical:
             # User-defined categorical variable - check if within reasonable limit
-            if (categories_calc.count() > 1000):
-                logger.warning(f"User-defined categorical variable {variable_name} has too many categories ({categories_calc.count()}), limiting to 1000")
+            if len(categories_calc) > 1000:
+                logger.warning(f"User-defined categorical variable {variable_name} has too many categories ({len(categories_calc)}), limiting to 1000")
                 # Still process but limit the categories to top 1000 by frequency
-                categories_calc = categories_calc.head(1000)
+                categories_calc = dict(
+                    sorted(categories_calc.items(), key=lambda item: item[1], reverse=True)[:1000]
+                )
             is_categorical=True
-            logger.debug(f"Variable {variable_name} is user-defined categorical with {categories_calc.count()} categories")
+            logger.debug(f"Variable {variable_name} is user-defined categorical with {len(categories_calc)} categories")
         else:
             logger.debug(
                 f"Variable {variable_name} has no value labels and is not user-defined categorical, skipping categorical calculation"
@@ -554,7 +560,7 @@ class DataDictionaryCsv:
         output=[]
 
         
-        for cat,freq in sorted(categories_calc.items()):
+        for cat,freq in sort_category_items(categories_calc.items()):
 
             is_missing=0
             if (str(cat) in user_missings):

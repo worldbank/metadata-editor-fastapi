@@ -7,6 +7,8 @@ from collections import defaultdict
 import numpy as np
 import pandas as pd
 
+from src.weighted_freq_key import normalize_category_value
+
 
 def _combine_welford(
     n_a: int, mean_a: float, m2_a: float, n_b: int, mean_b: float, m2_b: float
@@ -59,7 +61,8 @@ class _ColumnStats:
 
         counts = valid.value_counts()
         for key, freq in counts.items():
-            self.value_counts[key] += int(freq)
+            canonical = normalize_category_value(key)
+            self.value_counts[canonical] += int(freq)
 
         if self.is_numeric is None:
             self.is_numeric = pd.api.types.is_numeric_dtype(valid)

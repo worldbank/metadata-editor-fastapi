@@ -10,7 +10,7 @@ from src.VarInfo import VarInfo
 from src.DictParams import DictParams
 from src.DataUtils import DataUtils
 from src.DataDictionaryWeightValidation import validate_weight_columns_for_descr_stats
-from src.weighted_freq_key import weighted_freq_category_key
+from src.weighted_freq_key import weighted_freq_category_key, sort_category_items, merge_category_value_counts
 from src.utils.dta_reader import read_dta, should_use_chunked_read, iter_dta_chunks, dta_read_snapshot
 from src.utils.dta_chunked_stats import ChunkedDictionaryStats
 from statsmodels.stats.weightstats import DescrStatsW
@@ -282,16 +282,18 @@ class DataDictionary:
             categories_calc = col_stats.value_counts
         elif variable_name in categorical_list:
             categories_calc = col_stats.value_counts
-            if len(categories_calc) > 1000:
-                sorted_items = sorted(
-                    categories_calc.items(), key=lambda item: item[1], reverse=True
-                )[:1000]
-                categories_calc = dict(sorted_items)
         else:
             return []
 
+        categories_calc = merge_category_value_counts(categories_calc)
+        if variable_name in categorical_list and len(categories_calc) > 1000:
+            sorted_items = sorted(
+                categories_calc.items(), key=lambda item: item[1], reverse=True
+            )[:1000]
+            categories_calc = dict(sorted_items)
+
         output = []
-        for cat, freq in sorted(categories_calc.items()):
+        for cat, freq in sort_category_items(categories_calc.items()):
             is_missing = int(str(cat) in user_missings or cat in user_missings)
             catgry = {
                 "value": str(cat),
@@ -835,7 +837,7 @@ class DataDictionary:
             return []
 
         #get value counts [freq] by each unique value
-        categories_calc=df[variable_name].value_counts()
+        categories_calc=merge_category_value_counts(df[variable_name].value_counts())
 
         #check if meta field has value labels - if so, treat as categorical regardless of data type
         if (variable_name in meta.variable_value_labels):
@@ -846,13 +848,15 @@ class DataDictionary:
             if variable_name not in categorical_list:
                 return []
             # Keep a guardrail for high-cardinality user-selected categorical fields.
-            if (categories_calc.count() > 1000):
-                categories_calc = categories_calc.head(1000)
+            if len(categories_calc) > 1000:
+                categories_calc = dict(
+                    sorted(categories_calc.items(), key=lambda item: item[1], reverse=True)[:1000]
+                )
 
         output=[]
 
         
-        for cat,freq in sorted(categories_calc.items()):
+        for cat,freq in sort_category_items(categories_calc.items()):
 
             is_missing=0
             if (str(cat) in user_missings):
