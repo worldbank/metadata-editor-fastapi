@@ -245,6 +245,7 @@ def _read_dta_pandas(
 
         df = pd.read_stata(
             file_path,
+            convert_dates=False,
             convert_categoricals=False,
             convert_missing=False,
             columns=columns,
@@ -255,6 +256,18 @@ def _read_dta_pandas(
 
 def _is_unicode_error(exc: Exception) -> bool:
     return isinstance(exc, (UnicodeDecodeError, UnicodeError))
+
+
+def _is_date_conversion_error(exc: Exception) -> bool:
+    """True when pyreadstat/pandas cannot decode Stata date missings (e.g. days=-2147483648)."""
+    if isinstance(exc, OverflowError):
+        return True
+    msg = str(exc)
+    return "must have magnitude" in msg and "days=" in msg
+
+
+def _is_recoverable_decode_error(exc: Exception) -> bool:
+    return _is_unicode_error(exc) or _is_date_conversion_error(exc)
 
 
 def _probe_pyreadstat_read(
@@ -287,7 +300,7 @@ def _resolve_pyreadstat_kwargs(
     """Probe encodings with metadata and a one-row data sample; return kwargs that work."""
     encodings_to_try = encodings or DEFAULT_ENCODINGS
     last_error: Exception | None = None
-    saw_unicode_error = False
+    saw_recoverable_error = False
 
     for missing_flag in (True, False) if user_missing else (False,):
         for encoding in encodings_to_try:
@@ -302,14 +315,14 @@ def _resolve_pyreadstat_kwargs(
                 _probe_pyreadstat_read(file_path, kwargs, require_data_sample=True)
                 return kwargs
             except UnicodeDecodeError as e:
-                saw_unicode_error = True
+                saw_recoverable_error = True
                 last_error = e
-            except (UnicodeError, pyreadstat.ReadstatError, ValueError) as e:
+            except (UnicodeError, OverflowError, pyreadstat.ReadstatError, ValueError) as e:
                 last_error = e
-                if _is_unicode_error(e):
-                    saw_unicode_error = True
+                if _is_recoverable_decode_error(e):
+                    saw_recoverable_error = True
 
-    if saw_unicode_error:
+    if saw_recoverable_error:
         return None
 
     raise last_error if last_error else RuntimeError(f"Failed to read DTA file: {file_path}")
@@ -336,15 +349,17 @@ def read_dta(
             logger.debug("Read DTA file with user_missing=False: %s", file_path)
         try:
             return pyreadstat.read_dta(file_path, **read_kwargs)
-        except UnicodeDecodeError as e:
+        except (UnicodeDecodeError, UnicodeError, OverflowError) as e:
             logger.warning(
                 "pyreadstat failed to decode DTA values for %s (%s); using pandas.read_stata",
                 file_path,
                 e,
             )
-        except UnicodeError as e:
+        except ValueError as e:
+            if not _is_date_conversion_error(e):
+                raise
             logger.warning(
-                "pyreadstat failed to decode DTA values for %s (%s); using pandas.read_stata",
+                "pyreadstat failed to decode Stata dates for %s (%s); using pandas.read_stata",
                 file_path,
                 e,
             )
@@ -366,6 +381,54 @@ def _convert_mixed_column(series: pd.Series) -> pd.Series:
             return x
 
     return series.apply(try_convert)
+
+
+def _iter_dta_chunks_pandas(
+    file_path: str,
+    chunksize: int,
+    usecols: list[str] | None = None,
+) -> Iterator[tuple[pd.DataFrame, SimpleNamespace]]:
+    columns = list(usecols) if usecols else None
+    with pd.io.stata.StataReader(file_path) as reader:
+        meta = _meta_from_stata_reader(reader, df=None, usecols=columns)
+        expected_rows = meta.number_rows
+        row_offset = 0
+        chunk_index = 0
+        while row_offset < expected_rows:
+            _require_dta_file(file_path)
+            try:
+                chunk = reader.read(
+                    chunksize,
+                    convert_dates=False,
+                    convert_categoricals=False,
+                    convert_missing=False,
+                    columns=columns,
+                )
+            except StopIteration:
+                break
+            if chunk is None or chunk.empty:
+                break
+            if columns:
+                chunk = chunk[[name for name in columns if name in chunk.columns]]
+            chunk_index += 1
+            logger.info(
+                "Read DTA chunk %s for %s (pandas): %s rows (offset %s, cumulative %s/%s)",
+                chunk_index,
+                file_path,
+                len(chunk),
+                row_offset,
+                row_offset + len(chunk),
+                expected_rows,
+            )
+            yield chunk, meta
+            row_offset += len(chunk)
+            if len(chunk) < chunksize:
+                break
+    if row_offset < expected_rows:
+        raise RuntimeError(
+            f"Incomplete DTA read for {file_path}: read {row_offset} rows, "
+            f"expected {expected_rows}"
+        )
 
 
 def prepare_dta_dataframe(df: pd.DataFrame, meta: object) -> pd.DataFrame:
@@ -455,49 +518,25 @@ def iter_dta_chunks(
     )
     if read_kwargs is None:
         logger.info("Using pandas StataReader chunks for %s", file_path)
-        columns = list(usecols) if usecols else None
-        with pd.io.stata.StataReader(file_path) as reader:
-            meta = _meta_from_stata_reader(reader, df=None, usecols=columns)
-            expected_rows = meta.number_rows
-            row_offset = 0
-            chunk_index = 0
-            while row_offset < expected_rows:
-                _require_dta_file(file_path)
-                try:
-                    chunk = reader.read(chunksize)
-                except StopIteration:
-                    break
-                if chunk is None or chunk.empty:
-                    break
-                if columns:
-                    chunk = chunk[[name for name in columns if name in chunk.columns]]
-                chunk_index += 1
-                logger.info(
-                    "Read DTA chunk %s for %s (pandas): %s rows (offset %s, cumulative %s/%s)",
-                    chunk_index,
-                    file_path,
-                    len(chunk),
-                    row_offset,
-                    row_offset + len(chunk),
-                    expected_rows,
-                )
-                yield chunk, meta
-                row_offset += len(chunk)
-                if len(chunk) < chunksize:
-                    break
-        if row_offset < expected_rows:
-            raise RuntimeError(
-                f"Incomplete DTA read for {file_path}: read {row_offset} rows, "
-                f"expected {expected_rows}"
-            )
+        yield from _iter_dta_chunks_pandas(file_path, chunksize, usecols=usecols)
         return
 
-    yield from _iter_dta_chunks_pyreadstat(
-        file_path,
-        chunksize,
-        read_kwargs,
-        usecols=usecols,
-    )
+    try:
+        yield from _iter_dta_chunks_pyreadstat(
+            file_path,
+            chunksize,
+            read_kwargs,
+            usecols=usecols,
+        )
+    except (OverflowError, ValueError) as e:
+        if not _is_date_conversion_error(e):
+            raise
+        logger.warning(
+            "pyreadstat chunk read failed for Stata dates in %s (%s); using pandas.read_stata",
+            file_path,
+            e,
+        )
+        yield from _iter_dta_chunks_pandas(file_path, chunksize, usecols=usecols)
 
 
 def _validate_exported_row_count(
