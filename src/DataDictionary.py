@@ -13,6 +13,7 @@ from src.DataDictionaryWeightValidation import validate_weight_columns_for_descr
 from src.weighted_freq_key import weighted_freq_category_key, sort_category_items, merge_category_value_counts
 from src.utils.dta_reader import read_dta, should_use_chunked_read, iter_dta_chunks, dta_read_snapshot
 from src.utils.dta_chunked_stats import ChunkedDictionaryStats
+from src.utils.stata_missing import replace_stata_extended_missings
 from statsmodels.stats.weightstats import DescrStatsW
 from fastapi.exceptions import HTTPException
 
@@ -217,8 +218,8 @@ class DataDictionary:
             df.replace(missings, np.nan, inplace=True)
 
         for col in df.columns:
-            if not missings or col not in missings:
-                continue
+            user_missings = _missing_values_as_list((missings or {}).get(col))
+            df[col] = replace_stata_extended_missings(df[col], user_missings)
             if df[col].dtype == 'object' or pd.api.types.is_string_dtype(df[col]):
                 try:
                     non_null_values = df[col].dropna()

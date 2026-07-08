@@ -7,6 +7,7 @@ from collections import defaultdict
 import numpy as np
 import pandas as pd
 
+from src.utils.stata_missing import replace_stata_extended_missings
 from src.weighted_freq_key import normalize_category_value
 
 
@@ -50,7 +51,7 @@ class _ColumnStats:
 
     def update(self, series: pd.Series, user_missings: list | None = None) -> None:
         user_missings = user_missings or []
-        working = series.replace(user_missings, np.nan)
+        working = replace_stata_extended_missings(series, user_missings)
         invalid = int(working.isna().sum())
         valid = working.dropna()
         self.invalid_count += invalid
@@ -64,13 +65,19 @@ class _ColumnStats:
             canonical = normalize_category_value(key)
             self.value_counts[canonical] += int(freq)
 
+        numeric_values = pd.to_numeric(valid, errors="coerce")
+        chunk_is_numeric = numeric_values.notna().all()
         if self.is_numeric is None:
-            self.is_numeric = pd.api.types.is_numeric_dtype(valid)
+            self.is_numeric = chunk_is_numeric
+        elif self.is_numeric and not chunk_is_numeric:
+            self.is_numeric = False
 
         if not self.is_numeric:
             return
 
-        values = valid.astype(float)
+        values = numeric_values.dropna()
+        if len(values) == 0:
+            return
         chunk_n = len(values)
         chunk_mean = float(values.mean())
         chunk_m2 = float(((values - chunk_mean) ** 2).sum())
@@ -106,8 +113,13 @@ class _WeightedStats:
         values: pd.Series,
         weights: pd.Series,
     ) -> None:
-        w = weights.astype(float)
-        x = values.astype(float)
+        w = pd.to_numeric(weights, errors="coerce")
+        x = pd.to_numeric(values, errors="coerce")
+        valid = w.notna() & x.notna()
+        w = w[valid]
+        x = x[valid]
+        if w.empty:
+            return
         self.sum_weights += float(w.sum())
         self.sum_wx += float((w * x).sum())
         self.sum_wx2 += float((w * x * x).sum())
@@ -164,12 +176,16 @@ class ChunkedDictionaryStats:
             working = df[[field, weight_field]].copy()
             field_missings = missings.get(field, []) if missings else []
             weight_missings = missings.get(weight_field, []) if missings else []
-            if field_missings:
-                working[field] = working[field].replace(field_missings, np.nan)
-            if weight_missings:
-                working[weight_field] = working[weight_field].replace(
-                    weight_missings, np.nan
-                )
+            if field_missings and not isinstance(field_missings, list):
+                field_missings = list(field_missings)
+            if weight_missings and not isinstance(weight_missings, list):
+                weight_missings = list(weight_missings)
+            working[field] = replace_stata_extended_missings(
+                working[field], field_missings
+            )
+            working[weight_field] = replace_stata_extended_missings(
+                working[weight_field], weight_missings
+            )
             working.dropna(inplace=True)
             if working.empty:
                 continue

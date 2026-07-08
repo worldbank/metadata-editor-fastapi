@@ -266,8 +266,17 @@ def _is_date_conversion_error(exc: Exception) -> bool:
     return "must have magnitude" in msg and "days=" in msg
 
 
+def _is_chr_conversion_error(exc: Exception) -> bool:
+    """True when pyreadstat cannot map a Stata extended-missing code to a letter."""
+    return isinstance(exc, ValueError) and "chr() arg not in range" in str(exc)
+
+
 def _is_recoverable_decode_error(exc: Exception) -> bool:
-    return _is_unicode_error(exc) or _is_date_conversion_error(exc)
+    return (
+        _is_unicode_error(exc)
+        or _is_date_conversion_error(exc)
+        or _is_chr_conversion_error(exc)
+    )
 
 
 def _probe_pyreadstat_read(
@@ -356,10 +365,10 @@ def read_dta(
                 e,
             )
         except ValueError as e:
-            if not _is_date_conversion_error(e):
+            if not (_is_date_conversion_error(e) or _is_chr_conversion_error(e)):
                 raise
             logger.warning(
-                "pyreadstat failed to decode Stata dates for %s (%s); using pandas.read_stata",
+                "pyreadstat failed to decode DTA values for %s (%s); using pandas.read_stata",
                 file_path,
                 e,
             )
@@ -445,6 +454,30 @@ def prepare_dta_dataframe(df: pd.DataFrame, meta: object) -> pd.DataFrame:
     return df
 
 
+def _read_dta_chunk_pyreadstat(
+    file_path: str,
+    chunk_kwargs: dict,
+    *,
+    row_offset: int,
+) -> tuple[pd.DataFrame, object]:
+    """Read one pyreadstat chunk, retrying with user_missing=False on chr() errors."""
+    try:
+        return pyreadstat.read_dta(file_path, **chunk_kwargs)
+    except ValueError as e:
+        if not _is_chr_conversion_error(e) or not chunk_kwargs.get("user_missing"):
+            raise
+        logger.warning(
+            "pyreadstat user_missing=True failed at offset %s for %s (%s); "
+            "retrying chunk with user_missing=False",
+            row_offset,
+            file_path,
+            e,
+        )
+        retry_kwargs = dict(chunk_kwargs)
+        retry_kwargs["user_missing"] = False
+        return pyreadstat.read_dta(file_path, **retry_kwargs)
+
+
 def _iter_dta_chunks_pyreadstat(
     file_path: str,
     chunksize: int,
@@ -469,7 +502,9 @@ def _iter_dta_chunks_pyreadstat(
         chunk_kwargs["row_offset"] = row_offset
         chunk_kwargs["row_limit"] = chunksize
 
-        df, _chunk_meta = pyreadstat.read_dta(file_path, **chunk_kwargs)
+        df, _chunk_meta = _read_dta_chunk_pyreadstat(
+            file_path, chunk_kwargs, row_offset=row_offset
+        )
         if df is None or len(df) == 0:
             logger.warning(
                 "Empty chunk at offset %s for %s (expected %s rows total)",
@@ -529,10 +564,10 @@ def iter_dta_chunks(
             usecols=usecols,
         )
     except (OverflowError, ValueError) as e:
-        if not _is_date_conversion_error(e):
+        if not (_is_date_conversion_error(e) or _is_chr_conversion_error(e)):
             raise
         logger.warning(
-            "pyreadstat chunk read failed for Stata dates in %s (%s); using pandas.read_stata",
+            "pyreadstat chunk read failed for %s (%s); using pandas.read_stata",
             file_path,
             e,
         )
