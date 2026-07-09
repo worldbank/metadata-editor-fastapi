@@ -12,6 +12,12 @@ from src.DataUtils import DataUtils
 from src.DataDictionaryWeightValidation import validate_weight_columns_for_descr_stats
 from src.weighted_freq_key import weighted_freq_category_key, sort_category_items, merge_category_value_counts
 from src.utils.dta_reader import read_dta, should_use_chunked_read, iter_dta_chunks, dta_read_snapshot
+from src.utils.sav_reader import (
+    read_sav_metadata,
+    should_use_chunked_sav_read,
+    iter_sav_chunks,
+    sav_read_snapshot,
+)
 from src.utils.dta_chunked_stats import ChunkedDictionaryStats
 from src.utils.stata_missing import replace_stata_extended_missings
 from statsmodels.stats.weightstats import DescrStatsW
@@ -387,14 +393,7 @@ class DataDictionary:
             output[k] = int(round(raw)) if abs(raw - round(raw)) < 1e-9 else raw
         return output
 
-    def _get_data_dictionary_variable_chunked(self, params: DictParams, columns):
-        _, meta = read_dta(
-            params.file_path,
-            metadataonly=True,
-            usecols=columns,
-            user_missing=True,
-        )
-
+    def _run_chunked_dictionary_variable(self, params: DictParams, columns, meta, chunk_iter):
         if not params.missings or len(params.missings) == 0:
             if hasattr(meta, "missing_user_values") and meta.missing_user_values is not None:
                 params.missings = meta.missing_user_values
@@ -406,20 +405,15 @@ class DataDictionary:
         weight_pairs = [(str(w.field), str(w.weight_field)) for w in params.weights]
         validated_weights = not weight_pairs
 
-        with dta_read_snapshot(params.file_path) as stable_path:
-            for chunk, _chunk_meta in iter_dta_chunks(
-                stable_path,
-                usecols=columns,
-                user_missing=True,
-            ):
-                chunk = self._prepare_dataframe_missings(chunk.copy(), missings_map)
-                if weight_pairs and not validated_weights:
-                    for weight in params.weights:
-                        validate_weight_columns_for_descr_stats(
-                            chunk, weight.field, weight.weight_field
-                        )
-                    validated_weights = True
-                stats.update_chunk(chunk, missings_map, weight_pairs=weight_pairs)
+        for chunk, _chunk_meta in chunk_iter:
+            chunk = self._prepare_dataframe_missings(chunk.copy(), missings_map)
+            if weight_pairs and not validated_weights:
+                for weight in params.weights:
+                    validate_weight_columns_for_descr_stats(
+                        chunk, weight.field, weight.weight_field
+                    )
+                validated_weights = True
+            stats.update_chunk(chunk, missings_map, weight_pairs=weight_pairs)
 
         variables = []
         for name in meta.column_names:
@@ -454,6 +448,41 @@ class DataDictionary:
             "weights": weights,
         }
 
+    def _get_data_dictionary_variable_chunked_dta(self, params: DictParams, columns):
+        _, meta = read_dta(
+            params.file_path,
+            metadataonly=True,
+            usecols=columns,
+            user_missing=True,
+        )
+
+        def chunk_iter():
+            with dta_read_snapshot(params.file_path) as stable_path:
+                yield from iter_dta_chunks(
+                    stable_path,
+                    usecols=columns,
+                    user_missing=True,
+                )
+
+        return self._run_chunked_dictionary_variable(params, columns, meta, chunk_iter())
+
+    def _get_data_dictionary_variable_chunked_sav(self, params: DictParams, columns):
+        meta, read_kwargs = read_sav_metadata(
+            params.file_path,
+            usecols=columns,
+            user_missing=True,
+        )
+
+        def chunk_iter():
+            with sav_read_snapshot(params.file_path) as stable_path:
+                yield from iter_sav_chunks(
+                    stable_path,
+                    usecols=columns,
+                    read_kwargs=read_kwargs,
+                )
+
+        return self._run_chunked_dictionary_variable(params, columns, meta, chunk_iter())
+
     def get_data_dictionary_variable(self, params: DictParams):
         try:
             if (len(params.var_names) == 0):
@@ -471,7 +500,13 @@ class DataDictionary:
                 usecols=columns,
                 user_missing=True,
             ):
-                return self._get_data_dictionary_variable_chunked(params, columns)
+                return self._get_data_dictionary_variable_chunked_dta(params, columns)
+            if file_ext == ".sav" and should_use_chunked_sav_read(
+                params.file_path,
+                usecols=columns,
+                user_missing=True,
+            ):
+                return self._get_data_dictionary_variable_chunked_sav(params, columns)
 
             df,meta = self.load_file(params,metadataonly=False,usecols=columns)
 

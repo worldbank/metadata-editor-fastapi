@@ -2,7 +2,6 @@
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-import pyreadstat
 import time
 from typing import List, Optional, Dict, Any
 from src.DataUtils import DataUtils
@@ -24,6 +23,7 @@ from pydantic_settings import BaseSettings
 import json
 from src.DictParams import DictParams
 from src.utils.dta_reader import read_dta, write_dta_to_csv
+from src.utils.sav_reader import write_sav_to_csv
 import asyncio
 import functools
 import hashlib
@@ -340,53 +340,12 @@ def write_csv_file(fileinfo: FileInfo):
             )
             write_dta_to_csv(fileinfo.file_path, csv_filepath, user_missing=True)
 
-        elif file_ext == '.sav':
-            # Try multiple encodings for robust SAV file reading
-            encodings_to_try = [None, "utf-8", "latin1", "cp1252", "iso-8859-1", "cp850"]
-            df, meta = None, None
-            last_error = None
-            
-            for encoding in encodings_to_try:
-                try:
-                    logger.debug("Trying to read SAV file with encoding: %s", encoding)
-                    df, meta = pyreadstat.read_sav(fileinfo.file_path, encoding=encoding, user_missing=True)
-                    logger.debug("Successfully read SAV file with encoding: %s", encoding)
-                    break
-                except (pyreadstat.ReadstatError, UnicodeDecodeError, ValueError) as e:
-                    logger.debug("Failed to read SAV with encoding %s: %s", encoding, e)
-                    last_error = e
-                    continue
-            
-            # If all encodings failed, try without user_missing=True as fallback
-            if df is None:
-                logger.debug("All encodings failed with user_missing=True, trying without user_missing...")
-                for encoding in encodings_to_try:
-                    try:
-                        logger.debug("Trying to read SAV file with encoding: %s (user_missing=False)", encoding)
-                        df, meta = pyreadstat.read_sav(fileinfo.file_path, encoding=encoding, user_missing=False)
-                        logger.debug("Successfully read SAV file with encoding: %s (user_missing=False)", encoding)
-                        break
-                    except (pyreadstat.ReadstatError, UnicodeDecodeError, ValueError) as e:
-                        logger.debug("Failed to read SAV with encoding %s (user_missing=False): %s", encoding, e)
-                        last_error = e
-                        continue
-            
-            if df is None:
-                raise Exception(f"Failed to read SAV file with any encoding. Last error: {str(last_error)}")
-
-            # CSV has no types; to_csv stringifies values as read from pyreadstat.
-            # convert_dtypes / convert_mixed_column are for Stata/SPSS re-export, not CSV.
-            # df = df.convert_dtypes()
-            # for col in df.columns:
-            #     if col in meta.missing_user_values:
-            #         df[col] = convert_mixed_column(df[col])
-            #         print(f"Converted mixed column: {col}", df[col].dtype)
-
+        elif file_ext.lower() == '.sav':
             csv_filepath = os.path.join(
                 folder_path,
                 os.path.splitext(os.path.basename(fileinfo.file_path))[0] + '.csv',
             )
-            df.to_csv(csv_filepath, index=False)
+            write_sav_to_csv(fileinfo.file_path, csv_filepath, user_missing=True)
         else:
             return {"error": "file not supported" + file_ext}
 
