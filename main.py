@@ -77,6 +77,16 @@ from src.utils.path_security import (
 class FileInfo(BaseModel):
     file_path: str
 
+
+class NameLabelsParams(BaseModel):
+    """Parameters for /name-labels (backward compatible with FileInfo)."""
+    file_path: str
+    expected_columns: Optional[List[str]] = None
+    include_file_info: bool = False
+    include_comparison: bool = False
+    columns_only: bool = False
+
+
 class WeightsColumns(BaseModel):
     weight_field: str
     field: str
@@ -191,10 +201,80 @@ async def metadata(fileinfo: FileInfo):
     return datadict.get_metadata(fileinfo.model_copy(update={"file_path": file_path}))
 
 @app.post("/name-labels")
-async def name_labels(fileinfo: FileInfo):
-    file_path = resolve_safe_path_http(fileinfo.file_path, label="file_path")
-    datadict=DataDictionary()
-    return datadict.get_name_labels(fileinfo.model_copy(update={"file_path": file_path}))
+async def name_labels(params: NameLabelsParams):
+    """
+    Return variable names/labels from a data file.
+
+    Optional flags (backward compatible — omit for previous behavior):
+    - include_file_info: add file_info (format, format_version, format_label)
+    - expected_columns + include_comparison: compare columns to expected names
+    - columns_only: return column_names only (skip per-variable labels)
+    """
+    file_path = resolve_safe_path_http(params.file_path, label="file_path")
+    file_ext = os.path.splitext(file_path)[1].lower()
+
+    # CSV: header-only inspect (DataDictionary is Stata/SPSS)
+    if file_ext == ".csv":
+        from src.utils.source_file_info import build_file_info, compare_columns
+
+        encodings_to_try = [None, "utf-8", "latin1", "cp1252", "iso-8859-1"]
+        last_error = None
+        df = None
+        for encoding in encodings_to_try:
+            try:
+                if encoding is None:
+                    df = pd.read_csv(file_path, nrows=0)
+                else:
+                    df = pd.read_csv(file_path, nrows=0, encoding=encoding)
+                break
+            except Exception as e:
+                last_error = e
+                continue
+        if df is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to read CSV header: {last_error}",
+            )
+
+        # Row count without loading full file
+        row_count = 0
+        try:
+            with open(file_path, "rb") as fh:
+                row_count = max(sum(1 for _ in fh) - 1, 0)
+        except OSError:
+            row_count = None
+
+        column_names = list(df.columns)
+        if params.columns_only:
+            result = {
+                "rows": row_count,
+                "columns": len(column_names),
+                "column_names": column_names,
+                "variables": [],
+            }
+        else:
+            result = {
+                "rows": row_count,
+                "columns": len(column_names),
+                "variables": [
+                    {"name": name, "labl": None, "var_format": None}
+                    for name in column_names
+                ],
+            }
+        if params.include_file_info:
+            result["file_info"] = build_file_info(file_path)
+        if params.include_comparison and params.expected_columns is not None:
+            result["comparison"] = compare_columns(column_names, params.expected_columns)
+        return result
+
+    datadict = DataDictionary()
+    return datadict.get_name_labels(
+        FileInfo(file_path=file_path),
+        expected_columns=params.expected_columns,
+        include_file_info=params.include_file_info,
+        include_comparison=params.include_comparison,
+        columns_only=params.columns_only,
+    )
 
 
 

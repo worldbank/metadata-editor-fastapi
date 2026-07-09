@@ -154,28 +154,52 @@ class DataDictionary:
     
 
 
-    def get_name_labels(self, fileinfo: FileInfo):
-        """get name, label, format"""
+    def get_name_labels(
+        self,
+        fileinfo: FileInfo,
+        expected_columns=None,
+        include_file_info: bool = False,
+        include_comparison: bool = False,
+        columns_only: bool = False,
+    ):
+        """Get variable names/labels (and optionally file format info + column comparison)."""
+        from src.utils.source_file_info import build_file_info, compare_columns
 
-        df,meta = self.load_file(fileinfo)
-        variables=[]
+        df, meta = self.load_file(fileinfo)
+        column_names = list(meta.column_names)
 
-        for name in meta.column_names:
-            variables.append(
-                {
-                    'name':name,
-                    'labl':meta.column_names_to_labels[name],
-                    'var_format': meta.readstat_variable_types[name]
-                }
-            )
+        if columns_only:
+            result = {
+                "rows": meta.number_rows,
+                "columns": meta.number_columns,
+                "column_names": column_names,
+                "variables": [],
+            }
+        else:
+            variables = []
+            labels = getattr(meta, "column_names_to_labels", {}) or {}
+            types = getattr(meta, "readstat_variable_types", {}) or {}
+            for name in column_names:
+                variables.append(
+                    {
+                        "name": name,
+                        "labl": labels.get(name),
+                        "var_format": types.get(name),
+                    }
+                )
+            result = {
+                "rows": meta.number_rows,
+                "columns": meta.number_columns,
+                "variables": variables,
+            }
 
-        basic_sumstat = {
-            'rows':meta.number_rows,
-            'columns':meta.number_columns,
-            'variables':variables,        
-        }
+        if include_file_info:
+            result["file_info"] = build_file_info(fileinfo.file_path, meta)
 
-        return basic_sumstat
+        if include_comparison and expected_columns is not None:
+            result["comparison"] = compare_columns(column_names, expected_columns)
+
+        return result
     
 
     def infer_column_types(self, df):
