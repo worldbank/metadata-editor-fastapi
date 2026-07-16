@@ -271,11 +271,17 @@ def _is_chr_conversion_error(exc: Exception) -> bool:
     return isinstance(exc, ValueError) and "chr() arg not in range" in str(exc)
 
 
+def _is_readstat_encoding_error(exc: Exception) -> bool:
+    """True when libreadstat cannot transcode a string (e.g. latin-1 bytes in a UTF-8 file)."""
+    return isinstance(exc, pyreadstat.ReadstatError) and "invalid byte sequence" in str(exc)
+
+
 def _is_recoverable_decode_error(exc: Exception) -> bool:
     return (
         _is_unicode_error(exc)
         or _is_date_conversion_error(exc)
         or _is_chr_conversion_error(exc)
+        or _is_readstat_encoding_error(exc)
     )
 
 
@@ -359,6 +365,14 @@ def read_dta(
         try:
             return pyreadstat.read_dta(file_path, **read_kwargs)
         except (UnicodeDecodeError, UnicodeError, OverflowError) as e:
+            logger.warning(
+                "pyreadstat failed to decode DTA values for %s (%s); using pandas.read_stata",
+                file_path,
+                e,
+            )
+        except pyreadstat.ReadstatError as e:
+            if not _is_readstat_encoding_error(e):
+                raise
             logger.warning(
                 "pyreadstat failed to decode DTA values for %s (%s); using pandas.read_stata",
                 file_path,
