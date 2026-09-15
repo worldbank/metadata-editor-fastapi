@@ -406,10 +406,31 @@ def _convert_mixed_column(series: pd.Series) -> pd.Series:
     return series.apply(try_convert)
 
 
+def _apply_encoding(kwargs: dict, encoding: str | None) -> dict:
+    out = dict(kwargs)
+    if encoding is None:
+        out.pop("encoding", None)
+    else:
+        out["encoding"] = encoding
+    return out
+
+
+def _encoding_attempts(
+    current: str | None,
+    encodings: list[str | None] | None = None,
+) -> list[str | None]:
+    ordered: list[str | None] = []
+    for encoding in (current, *(encodings or DEFAULT_ENCODINGS)):
+        if encoding not in ordered:
+            ordered.append(encoding)
+    return ordered
+
+
 def _iter_dta_chunks_pandas(
     file_path: str,
     chunksize: int,
     usecols: list[str] | None = None,
+    start_offset: int = 0,
 ) -> Iterator[tuple[pd.DataFrame, SimpleNamespace]]:
     columns = list(usecols) if usecols else None
     with pd.io.stata.StataReader(file_path) as reader:
@@ -417,6 +438,34 @@ def _iter_dta_chunks_pandas(
         expected_rows = meta.number_rows
         row_offset = 0
         chunk_index = 0
+        if start_offset:
+            if start_offset > expected_rows:
+                raise RuntimeError(
+                    f"Cannot skip to offset {start_offset} for {file_path}: "
+                    f"file has {expected_rows} rows"
+                )
+            remaining_skip = start_offset
+            while remaining_skip > 0:
+                _require_dta_file(file_path)
+                skip_n = min(chunksize, remaining_skip)
+                skipped = reader.read(
+                    skip_n,
+                    convert_dates=False,
+                    convert_categoricals=False,
+                    convert_missing=False,
+                    columns=columns,
+                )
+                if skipped is None or skipped.empty:
+                    break
+                row_offset += len(skipped)
+                remaining_skip -= len(skipped)
+                if len(skipped) < skip_n:
+                    break
+            if row_offset != start_offset:
+                raise RuntimeError(
+                    f"Failed to skip to offset {start_offset} in pandas DTA read "
+                    f"for {file_path}: landed at {row_offset}"
+                )
         while row_offset < expected_rows:
             _require_dta_file(file_path)
             try:
@@ -492,33 +541,122 @@ def _read_dta_chunk_pyreadstat(
         return pyreadstat.read_dta(file_path, **retry_kwargs)
 
 
+def _read_dta_chunk_with_encoding_retry(
+    file_path: str,
+    chunk_kwargs: dict,
+    *,
+    row_offset: int,
+    encodings: list[str | None] | None = None,
+) -> tuple[pd.DataFrame, object, dict]:
+    """Read a chunk, retrying encodings when libreadstat hits invalid byte sequences.
+
+    The first-row encoding probe can succeed while a later chunk fails, so keep
+    trying the remaining encodings and return the kwargs that worked.
+    """
+    current_encoding = chunk_kwargs.get("encoding")
+    last_error: Exception | None = None
+
+    for encoding in _encoding_attempts(current_encoding, encodings):
+        attempt = _apply_encoding(chunk_kwargs, encoding)
+        try:
+            df, meta = _read_dta_chunk_pyreadstat(
+                file_path, attempt, row_offset=row_offset
+            )
+            if encoding != current_encoding:
+                logger.warning(
+                    "pyreadstat encoding %r failed at offset %s for %s (%s); "
+                    "continuing with encoding %r",
+                    current_encoding,
+                    row_offset,
+                    file_path,
+                    last_error,
+                    encoding,
+                )
+            return df, meta, attempt
+        except (UnicodeError, pyreadstat.ReadstatError) as e:
+            last_error = e
+            if not (_is_unicode_error(e) or _is_readstat_encoding_error(e)):
+                raise
+            logger.debug(
+                "pyreadstat encoding %r failed at offset %s for %s: %s",
+                encoding,
+                row_offset,
+                file_path,
+                e,
+            )
+
+    raise last_error if last_error else RuntimeError(
+        f"Failed to read DTA chunk at offset {row_offset}: {file_path}"
+    )
+
+
 def _iter_dta_chunks_pyreadstat(
     file_path: str,
     chunksize: int,
     read_kwargs: dict,
     usecols: list[str] | None = None,
+    encodings: list[str | None] | None = None,
 ) -> Iterator[tuple[pd.DataFrame, object]]:
     """Read a DTA file in chunks using explicit row_offset / row_limit."""
     meta_kwargs = dict(read_kwargs)
     meta_kwargs["metadataonly"] = True
     meta_kwargs["usecols"] = usecols
-    _, meta = pyreadstat.read_dta(file_path, **meta_kwargs)
+    try:
+        _, meta = pyreadstat.read_dta(file_path, **meta_kwargs)
+    except (OverflowError, ValueError, UnicodeError, pyreadstat.ReadstatError) as e:
+        if not _is_recoverable_decode_error(e):
+            raise
+        logger.warning(
+            "pyreadstat metadata read failed for %s (%s); using pandas.read_stata",
+            file_path,
+            e,
+        )
+        yield from _iter_dta_chunks_pandas(file_path, chunksize, usecols=usecols)
+        return
 
     expected_rows = meta.number_rows
     row_offset = 0
     chunk_index = 0
+    active_kwargs = dict(read_kwargs)
 
     while row_offset < expected_rows:
         _require_dta_file(file_path)
-        chunk_kwargs = dict(read_kwargs)
+        chunk_kwargs = dict(active_kwargs)
         chunk_kwargs["metadataonly"] = False
         chunk_kwargs["usecols"] = usecols
         chunk_kwargs["row_offset"] = row_offset
         chunk_kwargs["row_limit"] = chunksize
 
-        df, _chunk_meta = _read_dta_chunk_pyreadstat(
-            file_path, chunk_kwargs, row_offset=row_offset
-        )
+        try:
+            df, _chunk_meta, used_kwargs = _read_dta_chunk_with_encoding_retry(
+                file_path,
+                chunk_kwargs,
+                row_offset=row_offset,
+                encodings=encodings,
+            )
+        except (OverflowError, ValueError, UnicodeError, pyreadstat.ReadstatError) as e:
+            if not _is_recoverable_decode_error(e):
+                raise
+            logger.warning(
+                "pyreadstat chunk read failed at offset %s for %s (%s); "
+                "using pandas.read_stata for remaining rows",
+                row_offset,
+                file_path,
+                e,
+            )
+            yield from _iter_dta_chunks_pandas(
+                file_path,
+                chunksize,
+                usecols=usecols,
+                start_offset=row_offset,
+            )
+            return
+
+        if used_kwargs.get("encoding") != active_kwargs.get("encoding"):
+            active_kwargs = _apply_encoding(active_kwargs, used_kwargs.get("encoding"))
+        if used_kwargs.get("user_missing") != active_kwargs.get("user_missing"):
+            active_kwargs["user_missing"] = used_kwargs.get("user_missing")
+
         if df is None or len(df) == 0:
             logger.warning(
                 "Empty chunk at offset %s for %s (expected %s rows total)",
@@ -570,22 +708,13 @@ def iter_dta_chunks(
         yield from _iter_dta_chunks_pandas(file_path, chunksize, usecols=usecols)
         return
 
-    try:
-        yield from _iter_dta_chunks_pyreadstat(
-            file_path,
-            chunksize,
-            read_kwargs,
-            usecols=usecols,
-        )
-    except (OverflowError, ValueError) as e:
-        if not (_is_date_conversion_error(e) or _is_chr_conversion_error(e)):
-            raise
-        logger.warning(
-            "pyreadstat chunk read failed for %s (%s); using pandas.read_stata",
-            file_path,
-            e,
-        )
-        yield from _iter_dta_chunks_pandas(file_path, chunksize, usecols=usecols)
+    yield from _iter_dta_chunks_pyreadstat(
+        file_path,
+        chunksize,
+        read_kwargs,
+        usecols=usecols,
+        encodings=encodings,
+    )
 
 
 def _validate_exported_row_count(
