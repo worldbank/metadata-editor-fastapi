@@ -12,6 +12,14 @@
 Description=Metadata Editor FastAPI Backend (editor-fastapi)
 After=network.target
 
+# Hold startup until the filesystems holding the application and the Python
+# interpreter are mounted. Set by install-service.sh from REQUIRES_MOUNTS_FOR.
+%%REQUIRES_MOUNTS_FOR%%
+
+# Give up after 5 failed restarts within 2 minutes.
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
 [Service]
 # --- Identity ---
 User=%%SERVICE_USER%%
@@ -48,9 +56,6 @@ Environment="LD_LIBRARY_PATH=%%CONDA_LIB_PATH%%"
 # --- Restart policy ---
 Restart=on-failure
 RestartSec=10s
-# Give up after 5 failed restarts within 2 minutes.
-StartLimitIntervalSec=120
-StartLimitBurst=5
 
 # --- Resource limits ---
 LimitNOFILE=65536

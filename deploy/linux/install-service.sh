@@ -19,6 +19,10 @@
 #   SHARED_GROUP        Group shared with web server  (default: editor-shared)
 #   WEB_SERVER_USER     Apache/NGINX user to add to shared group (default: www-data)
 #   STORAGE_PATH        Shared folder path; permissions set if provided (default: unset)
+#   REQUIRES_MOUNTS_FOR Space-separated paths the service must wait for at boot.
+#                       Needed when the application, the conda environment or the
+#                       storage folder live on a filesystem other than /.
+#                       (default: unset — the script warns if it detects one)
 #
 # Usage:
 #   sudo CONDA_PYTHON_PATH=/home/myuser/miniconda3/envs/metadata-editor/bin/python \
@@ -39,6 +43,7 @@ HOST="${HOST:-127.0.0.1}"
 SHARED_GROUP="${SHARED_GROUP:-editor-shared}"
 WEB_SERVER_USER="${WEB_SERVER_USER:-www-data}"
 STORAGE_PATH="${STORAGE_PATH:-}"
+REQUIRES_MOUNTS_FOR="${REQUIRES_MOUNTS_FOR:-}"
 
 # Colors
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
@@ -89,12 +94,32 @@ Set PROJECT_DIR to the application root directory."
         error "Service template not found: $TEMPLATE_FILE"
     fi
 
+    # The unit loads .env through EnvironmentFile, so a missing file stops the
+    # service from starting at all.
+    if [ ! -f "$PROJECT_DIR/.env" ]; then
+        error "No .env file found at $PROJECT_DIR/.env
+
+The service loads it via EnvironmentFile and will not start without it.
+Create one and set STORAGE_PATH:
+
+    cp $PROJECT_DIR/.env.example $PROJECT_DIR/.env"
+    fi
+
+    # systemd parses EnvironmentFile itself rather than sourcing it as a shell
+    # script, so shell constructs are not evaluated.
+    if grep -qE '^[[:space:]]*export |\$\(|`' "$PROJECT_DIR/.env"; then
+        warn "$PROJECT_DIR/.env contains shell syntax (export or command substitution)."
+        warn "systemd does not evaluate it — those values will be wrong or ignored."
+    fi
+
     # Derive lib path from the Python executable: <env>/bin/python -> <env>/lib
     CONDA_LIB_PATH="$(dirname "$(dirname "$CONDA_PYTHON_PATH")")/lib"
     if [ ! -d "$CONDA_LIB_PATH" ]; then
         warn "Expected conda lib directory not found: $CONDA_LIB_PATH"
         warn "LD_LIBRARY_PATH will be set to this path anyway — verify it is correct."
     fi
+
+    resolve_mount_dependency
 
     info "Configuration:"
     info "  CONDA_PYTHON_PATH : $CONDA_PYTHON_PATH"
@@ -108,6 +133,46 @@ Set PROJECT_DIR to the application root directory."
     info "  STORAGE_PATH      : $STORAGE_PATH"
     else
     info "  STORAGE_PATH      : (not set — skip permission setup)"
+    fi
+    if [ -n "$REQUIRES_MOUNTS_FOR" ]; then
+    info "  REQUIRES_MOUNTS_FOR: $REQUIRES_MOUNTS_FOR"
+    else
+    info "  REQUIRES_MOUNTS_FOR: (not set)"
+    fi
+}
+
+# -------------------------------------------------------
+# Builds the unit's RequiresMountsFor line. When the caller did not supply
+# REQUIRES_MOUNTS_FOR, check whether anything the service needs sits on a
+# filesystem other than / — systemd may otherwise start the service before
+# that filesystem is mounted at boot.
+resolve_mount_dependency() {
+    if [ -n "$REQUIRES_MOUNTS_FOR" ]; then
+        REQUIRES_MOUNTS_DIRECTIVE="RequiresMountsFor=${REQUIRES_MOUNTS_FOR}"
+        return 0
+    fi
+
+    REQUIRES_MOUNTS_DIRECTIVE="# RequiresMountsFor= (not set; see REQUIRES_MOUNTS_FOR)"
+
+    if ! command -v findmnt > /dev/null 2>&1; then
+        return 0
+    fi
+
+    local detected
+    detected="$(
+        {
+            findmnt -no TARGET --target "$CONDA_PYTHON_PATH" 2>/dev/null || true
+            findmnt -no TARGET --target "$PROJECT_DIR" 2>/dev/null || true
+            [ -n "$STORAGE_PATH" ] && findmnt -no TARGET --target "$STORAGE_PATH" 2>/dev/null
+            true
+        } | grep -vx '/' | sort -u | tr '\n' ' '
+    )"
+    detected="${detected% }"
+
+    if [ -n "$detected" ]; then
+        warn "These paths are on filesystems other than /: $detected"
+        warn "Without a mount dependency the service can start before they are mounted."
+        warn "Re-run with: REQUIRES_MOUNTS_FOR=\"$detected\""
     fi
 }
 
@@ -166,8 +231,10 @@ create_service_user() {
         success "Created user '$SERVICE_USER'"
     fi
 
+    # Recursive: files left behind by earlier manual runs (often root-owned)
+    # would otherwise block log rotation and job cleanup.
     mkdir -p "$PROJECT_DIR/logs" "$PROJECT_DIR/jobs"
-    chown "$SERVICE_USER:$SERVICE_USER" "$PROJECT_DIR/logs" "$PROJECT_DIR/jobs"
+    chown -R "$SERVICE_USER:$SERVICE_USER" "$PROJECT_DIR/logs" "$PROJECT_DIR/jobs"
 }
 
 # -------------------------------------------------------
@@ -182,6 +249,7 @@ install_service() {
         -e "s|%%HOST%%|${HOST}|g" \
         -e "s|%%PORT%%|${PORT}|g" \
         -e "s|%%SHARED_GROUP%%|${SHARED_GROUP}|g" \
+        -e "s|%%REQUIRES_MOUNTS_FOR%%|${REQUIRES_MOUNTS_DIRECTIVE}|g" \
         "$TEMPLATE_FILE" > "$SERVICE_FILE"
 
     chmod 644 "$SERVICE_FILE"

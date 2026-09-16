@@ -157,6 +157,7 @@ sudo \
 | `SHARED_GROUP` | No | `editor-shared` | Group shared between FastAPI and web server |
 | `WEB_SERVER_USER` | No | `www-data` | Web server OS user added to shared group |
 | `STORAGE_PATH` | No | *(unset)* | Install-time only: path for `chown`/`chmod` on shared storage |
+| `REQUIRES_MOUNTS_FOR` | No | *(unset)* | Space-separated paths the service waits for at boot. Needed when the app, conda env or storage is on a filesystem other than `/`. The script detects this and prints the value to use. |
 
 ---
 
