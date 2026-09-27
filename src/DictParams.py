@@ -23,6 +23,10 @@ class DictParams(BaseModel):
     value_labels: Dict[str, Any] = {}
     name_labels: Dict[str, Any] = {}
     categorical: List[str] = []
+    # Frequency lists are skipped rather than truncated; see src/utils/categorical.py.
+    # The editor states these; 0 means unlimited.
+    frequency_auto_limit: int = 5000
+    frequency_max_limit: int = 10000
     export_format: str = "csv"
     export_options: Optional[Dict[str, Any]] = {}  # format-specific options (e.g. {"version": 14} for Stata)
     output_filename: Optional[str] = None  # desired output filename (without extension); defaults to source file's base name

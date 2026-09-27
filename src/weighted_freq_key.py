@@ -3,38 +3,51 @@
 from __future__ import annotations
 
 import math
+import re
 from typing import Any, Iterable
 
 import numpy as np
 import pandas as pd
 from fastapi import HTTPException
 
+# Same shape as PHP Variable_service::value_key — no leading-zero codes.
+_VALUE_KEY_NUM = re.compile(r"^-?(0|[1-9]\d*)(\.\d+)?$")
+
 
 def normalize_category_value(v: Any) -> Any:
     """
-    Canonical category value for grouping and display.
+    Canonical category key as a string (editor / PHP value_key).
 
-    Maps equivalent representations to one hashable value so mixed-type
-    columns (e.g. int 1 and str "1") aggregate under a single key.
+    int 1, float 1.0, and str "1" all become "1" so mixed pandas dtypes join.
+    Padded codes ("01", "011", "000223") stay as themselves — never rewritten
+    as a different number. Matching is always by this string, never by int.
     """
-    if v is None or (isinstance(v, float) and math.isnan(v)) or pd.isna(v):
-        return v
+    if v is None:
+        return ""
 
     if isinstance(v, bool):
         return v
 
-    num = pd.to_numeric(v, errors="coerce")
-    if pd.notna(num):
-        fv = float(num)
-        if math.isnan(fv):
-            return v
-        if fv == 0.0:
-            fv = 0.0
-        if fv == int(fv) and abs(fv) < 2**53:
-            return int(fv)
-        return fv
+    if isinstance(v, float) and math.isnan(v):
+        return v
 
-    return str(v)
+    # Avoid pd.isna on arrays; scalars only. Skip bool (already handled).
+    if not isinstance(v, (str, bytes)) and not isinstance(v, (int, float)):
+        try:
+            if pd.isna(v):
+                return v
+        except (ValueError, TypeError):
+            pass
+
+    s = str(v).strip()
+    if _VALUE_KEY_NUM.match(s):
+        if "." in s:
+            s = s.rstrip("0").rstrip(".")
+            if s in ("", "-"):
+                s = "0"
+            if s == "-0":
+                s = "0"
+    return s
 
 
 def category_sort_key(v: Any) -> tuple:
@@ -58,12 +71,21 @@ def sort_category_items(items: Iterable[tuple[Any, Any]]) -> list[tuple[Any, Any
 
 
 def merge_category_value_counts(counts: pd.Series | dict) -> dict[Any, int]:
-    """Merge value counts that differ only by type (e.g. 1 vs \"1\")."""
+    """Merge value counts that differ only by type (e.g. 1 vs \"1\" → \"1\")."""
     merged: dict[Any, int] = {}
     for key, freq in counts.items():
         canonical = normalize_category_value(key)
         merged[canonical] = merged.get(canonical, 0) + int(freq)
     return merged
+
+
+def distinct_category_values(counts: pd.Series | dict) -> set:
+    """
+    The distinct values merge_category_value_counts would produce, without the counts.
+
+    Uses keys() because iterating a Series yields its values, not its index.
+    """
+    return {normalize_category_value(key) for key in counts.keys()}
 
 
 def weighted_freq_category_key(v) -> str:

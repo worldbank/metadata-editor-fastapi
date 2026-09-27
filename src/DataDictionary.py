@@ -10,7 +10,7 @@ from src.VarInfo import VarInfo
 from src.DictParams import DictParams
 from src.DataUtils import DataUtils
 from src.DataDictionaryWeightValidation import validate_weight_columns_for_descr_stats
-from src.weighted_freq_key import weighted_freq_category_key, sort_category_items, merge_category_value_counts
+from src.weighted_freq_key import weighted_freq_category_key, sort_category_items, merge_category_value_counts, distinct_category_values
 from src.utils.dta_reader import read_dta, should_use_chunked_read, iter_dta_chunks, dta_read_snapshot
 from src.utils.sav_reader import (
     read_sav_metadata,
@@ -20,6 +20,7 @@ from src.utils.sav_reader import (
 )
 from src.utils.dta_chunked_stats import ChunkedDictionaryStats
 from src.utils.stata_missing import replace_stata_extended_missings
+from src.utils.categorical import plan_frequencies_for_file, label_for
 from statsmodels.stats.weightstats import DescrStatsW
 from fastapi.exceptions import HTTPException
 
@@ -302,29 +303,16 @@ class DataDictionary:
         meta,
         variable_name,
         user_missings=None,
-        categorical_list=None,
+        value_counts=None,
     ):
         user_missings = user_missings or []
-        categorical_list = categorical_list or []
-        categories = {}
+        categories = meta.variable_value_labels.get(variable_name, {})
 
-        if variable_name in meta.variable_value_labels:
-            categories = meta.variable_value_labels[variable_name]
-            categories_calc = col_stats.value_counts
-        elif variable_name in categorical_list:
-            categories_calc = col_stats.value_counts
-        else:
-            return []
-
-        categories_calc = merge_category_value_counts(categories_calc)
-        if variable_name in categorical_list and len(categories_calc) > 1000:
-            sorted_items = sorted(
-                categories_calc.items(), key=lambda item: item[1], reverse=True
-            )[:1000]
-            categories_calc = dict(sorted_items)
+        if value_counts is None:
+            value_counts = merge_category_value_counts(col_stats.value_counts)
 
         output = []
-        for cat, freq in sort_category_items(categories_calc.items()):
+        for cat, freq in sort_category_items(value_counts.items()):
             is_missing = int(str(cat) in user_missings or cat in user_missings)
             catgry = {
                 "value": str(cat),
@@ -337,13 +325,9 @@ class DataDictionary:
         if categories:
             is_numeric_column = col_stats.is_numeric
             for catgry in output:
-                if is_numeric_column:
-                    try:
-                        catgry["labl"] = categories.get(int(catgry["value"]), "")
-                    except (ValueError, TypeError):
-                        catgry["labl"] = categories.get(catgry["value"], "")
-                else:
-                    catgry["labl"] = categories.get(catgry["value"], "")
+                lab = label_for(catgry["value"], categories, is_numeric_column)
+                if lab is not None:
+                    catgry["labl"] = lab
 
         return output
 
@@ -352,17 +336,18 @@ class DataDictionary:
         col_stats,
         meta,
         variable_name,
+        plan,
         user_missings=None,
-        categorical_list=None,
     ):
         user_missings = user_missings or []
-        variable_categories = self._variable_categories_from_column_stats(
-            col_stats,
-            meta,
-            variable_name,
-            user_missings=user_missings,
-            categorical_list=categorical_list,
-        )
+        variable_categories = []
+        if plan["skip_reason"] is None:
+            variable_categories = self._variable_categories_from_column_stats(
+                col_stats,
+                meta,
+                variable_name,
+                user_missings=user_missings,
+            )
         variable_has_categories = bool(variable_categories)
 
         return {
@@ -371,6 +356,11 @@ class DataDictionary:
             "var_intrvl": self.variable_measure(
                 meta, variable_name, variable_has_categories
             ),
+            # Reported whether or not frequencies were computed, so the editor can say
+            # "739 distinct values, 1 labelled" and offer the choice.
+            "distinct_value_count": plan["distinct_value_count"],
+            "labelled_value_count": plan["labelled_value_count"],
+            "frequencies_skipped_reason": plan["skip_reason"],
             "loc_width": meta.variable_display_width[variable_name],
             "var_invalrng": {
                 "values": self.variable_missing_values(meta, variable_name)
@@ -415,6 +405,14 @@ class DataDictionary:
                 validated_weights = True
             stats.update_chunk(chunk, missings_map, weight_pairs=weight_pairs)
 
+        plans = plan_frequencies_for_file(
+            params,
+            meta.column_names,
+            lambda name: distinct_category_values(stats.column_stats(name).value_counts),
+            lambda name: stats.column_stats(name).is_numeric,
+            meta.variable_value_labels,
+        )
+
         variables = []
         for name in meta.column_names:
             user_missings = _missing_values_as_list(missings_map.get(name, []))
@@ -423,8 +421,8 @@ class DataDictionary:
                     stats.column_stats(name),
                     meta,
                     name,
+                    plans[name],
                     user_missings=user_missings,
-                    categorical_list=params.categorical,
                 )
             )
 
@@ -525,6 +523,14 @@ class DataDictionary:
             except Exception as e:
                 raise HTTPException(500, detail=f"Failed to process data types: {str(e)}") from e
 
+            plans = plan_frequencies_for_file(
+                params,
+                meta.column_names,
+                lambda name: distinct_category_values(df[name].value_counts()),
+                lambda name: pd.api.types.is_numeric_dtype(df[name]),
+                meta.variable_value_labels,
+            )
+
             variables = []
             try:
                 for name in meta.column_names:
@@ -539,8 +545,8 @@ class DataDictionary:
                             df,
                             meta,
                             name,
+                            plans[name],
                             user_missings=user_missings,
-                            categorical_list=params.categorical,
                         )
                     )
             except Exception as e:
@@ -691,9 +697,12 @@ class DataDictionary:
         if variable_has_categories:
             return 'discrete'
 
-        value_labels = meta.variable_value_labels   
-        
-        if variable_name in value_labels:    
+        # Taken from the file, not inferred from the data. SPSS states the measure
+        # outright; Stata has no such concept, and attaching a value label is the only
+        # way a Stata file says "this is a code list", so we honour that.
+        value_labels = meta.variable_value_labels
+
+        if variable_name in value_labels:
             return 'discrete'
 
         measure_mappings={
@@ -881,12 +890,8 @@ class DataDictionary:
 
 
     def variable_categories_calculated(
-        self, df,meta,variable_name, max_freq=100, user_missings=list(), categorical_list=list()
+        self, df,meta,variable_name, user_missings=list(), value_counts=None
     ):
-        
-        is_categorical=False
-        categories=[]
-        categories_calc=[]
         
         # Ensure user_missings is a list
         if not user_missings:
@@ -896,22 +901,12 @@ class DataDictionary:
         if variable_name not in df.columns:
             return []
 
-        #get value counts [freq] by each unique value
-        categories_calc=merge_category_value_counts(df[variable_name].value_counts())
+        categories=meta.variable_value_labels.get(variable_name, {})
 
-        #check if meta field has value labels - if so, treat as categorical regardless of data type
-        if (variable_name in meta.variable_value_labels):
-            is_categorical=True    
-            categories=meta.variable_value_labels[variable_name]
-        else:
-            # Strict opt-in when value labels are not present.
-            if variable_name not in categorical_list:
-                return []
-            # Keep a guardrail for high-cardinality user-selected categorical fields.
-            if len(categories_calc) > 1000:
-                categories_calc = dict(
-                    sorted(categories_calc.items(), key=lambda item: item[1], reverse=True)[:1000]
-                )
+        #get value counts [freq] by each unique value
+        if value_counts is None:
+            value_counts=merge_category_value_counts(df[variable_name].value_counts())
+        categories_calc=value_counts
 
         output=[]
 
@@ -946,26 +941,30 @@ class DataDictionary:
             is_numeric_column = pd.api.types.is_numeric_dtype(df[variable_name])
             
             for catgry in output:
-                if is_numeric_column:
-                    try:
-                        # For numeric columns, try to convert value to int first
-                        catgry['labl']=categories.get(int(catgry['value']),'')
-                    except (ValueError, TypeError):
-                        # If conversion fails, use the value as-is
-                        catgry['labl']=categories.get(catgry['value'],'')
-                else:
-                    # For non-numeric columns, use the value as-is
-                    catgry['labl']=categories.get(catgry['value'],'')
+                lab = label_for(catgry["value"], categories, is_numeric_column)
+                if lab is not None:
+                    catgry["labl"] = lab
 
 
         return output
 
 
-    def variable_summary(self, df,meta,variable_name, user_missings=list(), categorical_list=list()):
+    def variable_summary(self, df,meta,variable_name, plan=None, user_missings=list()):
         """Return a dictionary of summary statistics for a variable in a dataframe"""        
-        variable_categories=self.variable_categories_calculated(
-            df,meta,variable_name, user_missings=user_missings, categorical_list=categorical_list
-        )
+        if plan is None:
+            plan=plan_frequencies_for_file(
+                DictParams(file_path=""),
+                [variable_name],
+                lambda name: distinct_category_values(df[name].value_counts()),
+                lambda name: pd.api.types.is_numeric_dtype(df[name]),
+                meta.variable_value_labels,
+            )[variable_name]
+
+        variable_categories=[]
+        if plan["skip_reason"] is None:
+            variable_categories=self.variable_categories_calculated(
+                df,meta,variable_name, user_missings=user_missings
+            )
         variable_has_categories=False
 
         if (variable_categories):
@@ -977,6 +976,11 @@ class DataDictionary:
             "labl": meta.column_names_to_labels[variable_name],
             #"var_dcml": self.variable_decimal_percision(meta,variable_name),
             "var_intrvl": self.variable_measure(meta,variable_name,variable_has_categories),
+            # Reported whether or not frequencies were computed, so the editor can say
+            # "739 distinct values, 1 labelled" and offer the choice.
+            "distinct_value_count": plan["distinct_value_count"],
+            "labelled_value_count": plan["labelled_value_count"],
+            "frequencies_skipped_reason": plan["skip_reason"],
             "loc_width": meta.variable_display_width[variable_name],
             #"missing_values": self.variable_missing_values(meta,variable_name),
             "var_invalrng":{
