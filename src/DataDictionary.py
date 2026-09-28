@@ -13,6 +13,7 @@ from src.DataDictionaryWeightValidation import validate_weight_columns_for_descr
 from src.weighted_freq_key import weighted_freq_category_key, sort_category_items, merge_category_value_counts, distinct_category_values
 from src.utils.dta_reader import read_dta, should_use_chunked_read, iter_dta_chunks, dta_read_snapshot
 from src.utils.sav_reader import (
+    read_sav,
     read_sav_metadata,
     should_use_chunked_sav_read,
     iter_sav_chunks,
@@ -56,75 +57,18 @@ class DataDictionary:
                 ) from e
 
         elif file_ext.lower() == '.sav':
-            encodings_to_try = [
-                None, 
-                "utf-8", 
-                "latin1", 
-                "cp1252", 
-                "iso-8859-1", 
-                "cp850",
-                "cp437",
-                "windows-1252",
-                "ascii",
-                "utf-16",
-                "utf-32"
-            ]
-            
-            df, meta = None, None
-            last_error = None
-                
-            for encoding in encodings_to_try:
-                try:
-                    if encoding is None:
-                        df, meta = pyreadstat.read_sav(
-                            fileinfo.file_path, 
-                            user_missing=True,
-                            metadataonly=metadataonly,
-                            usecols=usecols
-                        )
-                    else:
-                        df, meta = pyreadstat.read_sav(
-                            fileinfo.file_path, 
-                            user_missing=True,
-                            metadataonly=metadataonly,
-                            usecols=usecols,
-                            encoding=encoding
-                        )
-                    break  # Success, exit the loop
-                    
-                except (pyreadstat.ReadstatError, UnicodeDecodeError, UnicodeError, ValueError) as e:
-                    last_error = e
-                    continue  # Try next encoding
-            
-            # If all encodings failed, raise the last error
-            if df is None or meta is None:
-                # try all encodings again with user_missing=False                
-                for encoding in encodings_to_try:
-                    try:
-                        if encoding is None:
-                            df, meta = pyreadstat.read_sav(
-                                fileinfo.file_path, 
-                                user_missing=False,
-                                metadataonly=metadataonly,
-                                usecols=usecols
-                            )
-                        else:
-                            df, meta = pyreadstat.read_sav(
-                                fileinfo.file_path, 
-                                user_missing=False,
-                                metadataonly=metadataonly,
-                                usecols=usecols,
-                                encoding=encoding
-                            )
-                        break  # Success, exit the loop
-                        
-                    except (pyreadstat.ReadstatError, UnicodeDecodeError, UnicodeError, ValueError) as e:
-                        last_error = e
-                        continue  # Try next encoding
-                
-                # If still failed after second attempt
-                if df is None or meta is None:
-                    raise HTTPException(400, detail=f"Failed to read SAV file with any encoding (tried both user_missing=True and user_missing=False). Last error: {str(last_error)}")
+            try:
+                df, meta = read_sav(
+                    fileinfo.file_path,
+                    metadataonly=metadataonly,
+                    usecols=usecols,
+                    user_missing=True,
+                )
+            except Exception as e:
+                logger.error("Failed to read SAV file: %s", e)
+                raise HTTPException(
+                    400, detail=f"Failed to read SAV file. Last error: {str(e)}"
+                ) from e
         else:
             logger.error(f"File not supported: {file_ext}")
             raise HTTPException(400, detail="file not supported: " + file_ext)
@@ -523,10 +467,19 @@ class DataDictionary:
             except Exception as e:
                 raise HTTPException(500, detail=f"Failed to process data types: {str(e)}") from e
 
+            # Cache each column's value_counts() while planning frequencies so the
+            # categories step below doesn't re-scan the whole column a second time.
+            value_counts_cache = {}
+
+            def _values_for(name, _cache=value_counts_cache):
+                vc = df[name].value_counts()
+                _cache[name] = vc
+                return distinct_category_values(vc)
+
             plans = plan_frequencies_for_file(
                 params,
                 meta.column_names,
-                lambda name: distinct_category_values(df[name].value_counts()),
+                _values_for,
                 lambda name: pd.api.types.is_numeric_dtype(df[name]),
                 meta.variable_value_labels,
             )
@@ -540,6 +493,7 @@ class DataDictionary:
                             if missing_col == name:
                                 user_missings = _missing_values_as_list(missings)
                                 break
+                    cached_vc = value_counts_cache.get(name)
                     variables.append(
                         self.variable_summary(
                             df,
@@ -547,6 +501,9 @@ class DataDictionary:
                             name,
                             plans[name],
                             user_missings=user_missings,
+                            value_counts=merge_category_value_counts(cached_vc)
+                            if cached_vc is not None
+                            else None,
                         )
                     )
             except Exception as e:
@@ -949,21 +906,24 @@ class DataDictionary:
         return output
 
 
-    def variable_summary(self, df,meta,variable_name, plan=None, user_missings=list()):
+    def variable_summary(self, df,meta,variable_name, plan=None, user_missings=list(), value_counts=None):
         """Return a dictionary of summary statistics for a variable in a dataframe"""        
         if plan is None:
+            planned_value_counts = df[variable_name].value_counts()
             plan=plan_frequencies_for_file(
                 DictParams(file_path=""),
                 [variable_name],
-                lambda name: distinct_category_values(df[name].value_counts()),
+                lambda name: distinct_category_values(planned_value_counts),
                 lambda name: pd.api.types.is_numeric_dtype(df[name]),
                 meta.variable_value_labels,
             )[variable_name]
+            if value_counts is None:
+                value_counts = merge_category_value_counts(planned_value_counts)
 
         variable_categories=[]
         if plan["skip_reason"] is None:
             variable_categories=self.variable_categories_calculated(
-                df,meta,variable_name, user_missings=user_missings
+                df,meta,variable_name, user_missings=user_missings, value_counts=value_counts
             )
         variable_has_categories=False
 
