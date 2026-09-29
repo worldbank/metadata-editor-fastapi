@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
-import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 
@@ -167,26 +165,13 @@ def should_use_chunked_sav_read(
 
 @contextmanager
 def sav_read_snapshot(file_path: str):
-    """Provide a stable path for chunked SAV reads via hard link or temp copy."""
+    """Yield the original SAV path for chunked reads.
+
+    Do not copy or hard-link: large files cannot fit on a small /tmp, and the
+    source file is expected to remain in place for the duration of the job.
+    """
     _require_sav_file(file_path)
-    fd, temp_path = tempfile.mkstemp(suffix=".sav", prefix="sav_read_")
-    os.close(fd)
-    try:
-        try:
-            os.link(file_path, temp_path)
-            logger.info("Chunked SAV read using hard link: %s", file_path)
-        except OSError:
-            logger.info(
-                "Chunked SAV read copying to temp (hard link unavailable): %s",
-                file_path,
-            )
-            shutil.copy2(file_path, temp_path)
-        yield temp_path
-    finally:
-        try:
-            os.unlink(temp_path)
-        except OSError:
-            logger.warning("Failed to remove temp SAV snapshot: %s", temp_path)
+    yield file_path
 
 
 def iter_sav_chunks(

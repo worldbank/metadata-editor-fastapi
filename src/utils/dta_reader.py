@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
-import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -112,30 +110,13 @@ def _require_dta_file(file_path: str) -> None:
 
 @contextmanager
 def dta_read_snapshot(file_path: str):
-    """Provide a stable path for chunked reads via hard link or temp copy.
+    """Yield the original DTA path for chunked reads.
 
-    If the original file is deleted while export is running (e.g. by an external
-    process), reads can continue against the linked copy until this context exits.
+    Do not copy or hard-link: large files cannot fit on a small /tmp, and the
+    source file is expected to remain in place for the duration of the job.
     """
     _require_dta_file(file_path)
-    fd, temp_path = tempfile.mkstemp(suffix=".dta", prefix="dta_read_")
-    os.close(fd)
-    try:
-        try:
-            os.link(file_path, temp_path)
-            logger.info("Chunked DTA read using hard link: %s", file_path)
-        except OSError:
-            logger.info(
-                "Chunked DTA read copying to temp (hard link unavailable): %s",
-                file_path,
-            )
-            shutil.copy2(file_path, temp_path)
-        yield temp_path
-    finally:
-        try:
-            os.unlink(temp_path)
-        except OSError:
-            logger.warning("Failed to remove temp DTA snapshot: %s", temp_path)
+    yield file_path
 
 
 def _pandas_dtype_to_readstat(dtype) -> str:
