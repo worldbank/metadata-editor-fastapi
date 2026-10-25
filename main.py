@@ -1141,9 +1141,8 @@ def _get_job_record(jobid: str) -> dict | None:
 async def queue_items(jobid: str):
     job = _get_job_record(jobid)
     if job:
-        # Update last_accessed timestamp
+        # Touch in-memory only; do not persist to SQLite on every status poll.
         job["last_accessed"] = datetime.datetime.now().isoformat()
-        app.job_store.update_status(jobid, job["status"], touch_accessed=True)
 
         if (job["status"]=="done"):
             data={}
