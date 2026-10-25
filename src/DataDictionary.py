@@ -21,7 +21,7 @@ from src.utils.sav_reader import (
 )
 from src.utils.dta_chunked_stats import ChunkedDictionaryStats
 from src.utils.stata_missing import replace_stata_extended_missings
-from src.utils.categorical import plan_frequencies_for_file, label_for
+from src.utils.categorical import plan_frequencies_for_file, attach_labels
 from statsmodels.stats.weightstats import DescrStatsW
 from fastapi.exceptions import HTTPException
 
@@ -266,12 +266,7 @@ class DataDictionary:
                 catgry["is_missing"] = 1
             output.append(catgry)
 
-        if categories:
-            is_numeric_column = col_stats.is_numeric
-            for catgry in output:
-                lab = label_for(catgry["value"], categories, is_numeric_column)
-                if lab is not None:
-                    catgry["labl"] = lab
+        attach_labels(output, categories)
 
         return output
 
@@ -892,15 +887,7 @@ class DataDictionary:
 
             output.append(catgry)
 
-        #if labels are available add them    
-        if (categories):
-            # Check if the column is numeric to determine how to look up labels
-            is_numeric_column = pd.api.types.is_numeric_dtype(df[variable_name])
-            
-            for catgry in output:
-                lab = label_for(catgry["value"], categories, is_numeric_column)
-                if lab is not None:
-                    catgry["labl"] = lab
+        attach_labels(output, categories)
 
 
         return output

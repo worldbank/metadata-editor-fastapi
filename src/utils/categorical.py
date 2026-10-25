@@ -11,9 +11,10 @@ first upload — the variables do not exist yet — so something has to choose a
 starting point, and "every labelled variable" is the wrong answer: a continuous
 variable that labels `99 = Refused` would produce one entry per distinct value.
 
-So: compute when the number of distinct values does not exceed the number of
-value labels; defer when it does (e.g. 1000 distinct, 10 labels). No key
-matching — only the two counts. Either way the caller reports
+So: compute unless distinct values far outnumber value labels — more than twice
+as many, and more than 10 extra (e.g. 1000 distinct with 10 labels is deferred;
+Yes/No/DK plus one stray code is not). No key matching — only the two counts.
+Either way the caller reports
 `distinct_value_count` and `labelled_value_count`, so the editor can show what
 was skipped and offer the choice instead of guessing again.
 
@@ -62,6 +63,17 @@ def label_for(value, categories, is_numeric=False):
     return None
 
 
+def attach_labels(catgry_rows, categories):
+    """Set `labl` on each frequency row whose value has a value label."""
+    if not categories:
+        return
+    mapped = _canonical_label_map(categories)
+    for catgry in catgry_rows:
+        canon = normalize_category_value(catgry["value"])
+        if canon in mapped:
+            catgry["labl"] = mapped[canon]
+
+
 def frequency_skip_reason(
     categories,
     value_counts,
@@ -73,7 +85,7 @@ def frequency_skip_reason(
     """
     Why this variable should not get a frequency list, or None to compute one.
 
-    Auto rule: distinct values must not exceed the number of value labels.
+    Auto rule: see labels_too_few().
     Limits of 0 are unlimited. A list is never truncated to fit a limit.
     """
     distinct = len(value_counts)
@@ -98,10 +110,21 @@ def frequency_skip_reason(
         # No data to judge by (metadata-only read): labels are the only signal.
         return None
 
-    if distinct > label_count:
+    if labels_too_few(distinct, label_count):
         return "labels_did_not_cover"
 
     return None
+
+
+# A few unlabelled codes (stray values, unlabelled missing codes) do not make a labelled
+# variable continuous; only a large surplus of distinct values over labels does.
+LABEL_SURPLUS_RATIO = 2
+LABEL_SURPLUS_MIN = 10
+
+
+def labels_too_few(distinct, label_count):
+    """True when distinct values far outnumber the variable's value labels."""
+    return distinct > max(LABEL_SURPLUS_RATIO * label_count, label_count + LABEL_SURPLUS_MIN)
 
 
 def plan_frequencies(
