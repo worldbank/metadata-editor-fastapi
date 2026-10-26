@@ -1734,6 +1734,10 @@ async def indicator_timeseries_chart_aggregate(
 	Each record: time_period, observation_value, series_key, slice_values (same order as
 	metadata.slice_columns; used by PHP for labels). PHP strips slice_values and sets geography /
 	series_key_label from DSD codelists.
+
+	include_columns: non-key columns returned per record as `attributes` {column: value} (non-empty
+	values only). With include_missing_with_columns, rows with an empty value are also returned when
+	any included column is non-empty (observation_value is then null).
 	"""
 	project_id = body.project_id.strip()
 	if not project_id.isdigit():
@@ -1770,6 +1774,19 @@ async def indicator_timeseries_chart_aggregate(
 				)
 			slice_resolved.append(r)
 
+		include_resolved: List[str] = []
+		for ic in body.include_columns:
+			r = resolve_column_name_case_insensitive(str(ic).strip(), table_col_names)
+			if not r:
+				raise HTTPException(status_code=400, detail=f"include column not in table: {ic}")
+			if r in (tc_res, vc_res) or r in slice_resolved:
+				raise HTTPException(
+					status_code=400,
+					detail="include_columns must not include time, value or slice columns",
+				)
+			if r not in include_resolved:
+				include_resolved.append(r)
+
 		for fk in body.filters.keys():
 			r = resolve_column_name_case_insensitive(str(fk).strip(), table_col_names)
 			if not r:
@@ -1787,10 +1804,13 @@ async def indicator_timeseries_chart_aggregate(
 			sq = quote_identifier(r)
 			slice_trim.append(f"trim(cast(t.{sq} AS VARCHAR))")
 
-		where_parts: List[str] = [
-			f"t.{v_q} IS NOT NULL",
-			f"trim(cast(t.{v_q} AS VARCHAR)) <> ''",
-		]
+		include_trim = [f"trim(cast(t.{quote_identifier(r)} AS VARCHAR))" for r in include_resolved]
+		value_present = f"(t.{v_q} IS NOT NULL AND trim(cast(t.{v_q} AS VARCHAR)) <> '')"
+		if body.include_missing_with_columns and include_trim:
+			any_included = " OR ".join(f"coalesce({it}, '') <> ''" for it in include_trim)
+			where_parts: List[str] = [f"({value_present} OR {any_included})"]
+		else:
+			where_parts = [value_present]
 		params: List[Any] = []
 
 		for col_key, vals in body.filters.items():
@@ -1850,6 +1870,8 @@ async def indicator_timeseries_chart_aggregate(
 			select_list = f"{time_expr} AS time_period, {select_dims}, {value_expr} AS observation_value"
 		else:
 			select_list = f"{time_expr} AS time_period, {value_expr} AS observation_value"
+		if include_trim:
+			select_list += ", " + ", ".join(f"{it} AS inc_{i}" for i, it in enumerate(include_trim))
 
 		order_parts = [time_expr] + slice_trim
 		order_sql = ", ".join(order_parts)
@@ -1870,6 +1892,7 @@ async def indicator_timeseries_chart_aggregate(
 		for row in rows:
 			rec: Dict[str, Any] = {}
 			dims: Dict[str, str] = {}
+			attrs: Dict[str, str] = {}
 			for name, val in zip(col_names, row):
 				if name == "time_period":
 					rec["time_period"] = val if val is None else str(val)
@@ -1880,6 +1903,11 @@ async def indicator_timeseries_chart_aggregate(
 					sc = slice_resolved[idx]
 					sval = "" if val is None else str(val)
 					dims[sc] = sval
+				elif name.startswith("inc_"):
+					if val is not None and str(val) != "":
+						attrs[include_resolved[int(name.split("_", 1)[1])]] = str(val)
+			if include_resolved:
+				rec["attributes"] = attrs
 			if dims:
 				rec["series_key"] = " | ".join(dims[c] for c in slice_resolved if c in dims)
 				rec["slice_values"] = [dims[c] if c in dims else "" for c in slice_resolved]
@@ -1903,6 +1931,7 @@ async def indicator_timeseries_chart_aggregate(
 			"time_column": tc_res,
 			"value_column": vc_res,
 			"slice_columns": slice_resolved,
+			"include_columns": include_resolved,
 			"total_records": len(records),
 		},
 	}
@@ -2023,9 +2052,14 @@ async def indicator_timeseries_observation_key_validate(
 async def indicator_timeseries_export_csv(
 	background_tasks: BackgroundTasks,
 	project_id: str = Query(..., description="Editor sid"),
+	columns: Optional[str] = Query(
+		None,
+		description="Comma-separated columns to export, in output order (case-insensitive; unknown names skipped). "
+		"Default: all columns.",
+	),
 	service: TimeseriesService = Depends(get_timeseries_service),
 ):
-	"""Export full project_{sid}.timeseries as CSV (attachment)."""
+	"""Export project_{sid}.timeseries as CSV (attachment): all columns, or `columns` in the given order."""
 	if not project_id.isdigit():
 		raise HTTPException(status_code=400, detail="project_id must be numeric")
 
@@ -2045,8 +2079,18 @@ async def indicator_timeseries_export_csv(
 		with duckdb.connect(db_path) as conn:
 			if not _timeseries_table_exists(conn, schema_name):
 				raise HTTPException(status_code=404, detail="Timeseries table not found for this project")
+			select_list = "*"
+			if columns is not None and columns.strip() != "":
+				table_cols = [str(r[0]) for r in fetch_table_column_rows(conn, schema_name, TIMESERIES_TABLE_NAME)]
+				picked: List[str] = []
+				for name in columns.split(","):
+					r = resolve_column_name_case_insensitive(name.strip(), table_cols) if name.strip() else None
+					if r and r not in picked:
+						picked.append(r)
+				if picked:
+					select_list = ", ".join(quote_identifier(c) for c in picked)
 			conn.execute(
-				f"COPY (SELECT * FROM {qual}) TO '{path_norm}' (HEADER, DELIMITER ',')"
+				f"COPY (SELECT {select_list} FROM {qual}) TO '{path_norm}' (HEADER, DELIMITER ',')"
 			)
 	except HTTPException:
 		if os.path.isfile(tmp_path):

@@ -400,6 +400,14 @@ class IndicatorChartAggregateRequest(BaseModel):
 	time_period_start: Optional[str] = None
 	time_period_end: Optional[str] = None
 	use_ts_year_for_time_filter: Optional[bool] = None
+	include_columns: List[str] = Field(
+		default_factory=list,
+		description="Physical non-key columns (e.g. footnote columns) returned per record under `attributes`",
+	)
+	include_missing_with_columns: bool = Field(
+		False,
+		description="Also return rows with an empty value when any include_columns value is non-empty",
+	)
 
 
 class IndicatorObservationKeyValidateRequest(BaseModel):
