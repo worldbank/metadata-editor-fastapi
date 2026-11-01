@@ -21,6 +21,15 @@ from src.utils.sav_reader import (
 )
 from src.utils.dta_chunked_stats import ChunkedDictionaryStats
 from src.utils.stata_missing import replace_stata_extended_missings
+from src.utils.declared_missings import (
+    file_declared_missings,
+    column_declared_missings,
+    discrete_missings_map,
+    missing_ranges_map,
+    apply_missing_ranges,
+    invalrng,
+    MissingTally,
+)
 from src.utils.categorical import plan_frequencies_for_file, attach_labels
 from statsmodels.stats.weightstats import DescrStatsW
 from fastapi.exceptions import HTTPException
@@ -188,12 +197,18 @@ class DataDictionary:
 
 
     def _prepare_dataframe_missings(self, df, missings):
-        """Apply user-missing replacement and numeric coercion used before summarization."""
-        if missings:
-            df.replace(missings, np.nan, inplace=True)
+        """Apply user-missing replacement and numeric coercion used before summarization.
+
+        `missings` may hold discrete codes and ranges ({"lo", "hi"}), see
+        src/utils/declared_missings.py.
+        """
+        discrete = discrete_missings_map(missings)
+        if discrete:
+            df.replace(discrete, np.nan, inplace=True)
+        apply_missing_ranges(df, missing_ranges_map(missings))
 
         for col in df.columns:
-            user_missings = _missing_values_as_list((missings or {}).get(col))
+            user_missings = _missing_values_as_list(discrete.get(col))
             df[col] = replace_stata_extended_missings(df[col], user_missings)
             if df[col].dtype == 'object' or pd.api.types.is_string_dtype(df[col]):
                 try:
@@ -301,9 +316,7 @@ class DataDictionary:
             "labelled_value_count": plan["labelled_value_count"],
             "frequencies_skipped_reason": plan["skip_reason"],
             "loc_width": meta.variable_display_width[variable_name],
-            "var_invalrng": {
-                "values": self.variable_missing_values(meta, variable_name)
-            },
+            "var_invalrng": self.variable_invalrng(meta, variable_name),
             "var_valrng": self._variable_valid_range_from_column_stats(col_stats),
             "var_sumstat": self._variable_sumstats_from_column_stats(
                 col_stats, user_missings=user_missings
@@ -324,25 +337,27 @@ class DataDictionary:
 
     def _run_chunked_dictionary_variable(self, params: DictParams, columns, meta, chunk_iter):
         if not params.missings or len(params.missings) == 0:
-            if hasattr(meta, "missing_user_values") and meta.missing_user_values is not None:
-                params.missings = meta.missing_user_values
-            else:
-                params.missings = {}
+            # Declared in the file: Stata missing_user_values, SPSS missing_ranges.
+            params.missings = file_declared_missings(meta)
 
         missings_map = params.missings or {}
+        discrete_map = discrete_missings_map(missings_map)
         stats = ChunkedDictionaryStats(list(meta.column_names))
+        tally = MissingTally()
         weight_pairs = [(str(w.field), str(w.weight_field)) for w in params.weights]
         validated_weights = not weight_pairs
 
         for chunk, _chunk_meta in chunk_iter:
-            chunk = self._prepare_dataframe_missings(chunk.copy(), missings_map)
+            prepared = self._prepare_dataframe_missings(chunk.copy(), missings_map)
+            tally.add(chunk, prepared)
+            chunk = prepared
             if weight_pairs and not validated_weights:
                 for weight in params.weights:
                     validate_weight_columns_for_descr_stats(
                         chunk, weight.field, weight.weight_field
                     )
                 validated_weights = True
-            stats.update_chunk(chunk, missings_map, weight_pairs=weight_pairs)
+            stats.update_chunk(chunk, discrete_map, weight_pairs=weight_pairs)
 
         plans = plan_frequencies_for_file(
             params,
@@ -354,7 +369,7 @@ class DataDictionary:
 
         variables = []
         for name in meta.column_names:
-            user_missings = _missing_values_as_list(missings_map.get(name, []))
+            user_missings = _missing_values_as_list(discrete_map.get(name, []))
             variables.append(
                 self._variable_summary_from_column_stats(
                     stats.column_stats(name),
@@ -377,6 +392,8 @@ class DataDictionary:
                     "wgt_stdev": weighted_stats.stddev(),
                 }
             self.apply_weighted_freq_to_variables(variables, weights)
+
+        tally.apply(variables, meta.variable_value_labels)
 
         return {
             "rows": meta.number_rows,
@@ -451,14 +468,18 @@ class DataDictionary:
             #get user missing values from meta
             # If params.missings is empty, get missing values from metadata
             if not params.missings or len(params.missings) == 0:
-                if hasattr(meta, 'missing_user_values') and meta.missing_user_values is not None:
-                    params.missings = meta.missing_user_values
-                else:
-                    params.missings = {}
+                # Declared in the file: Stata missing_user_values, SPSS missing_ranges.
+                params.missings = file_declared_missings(meta)
+            discrete_map = discrete_missings_map(params.missings)
             
-            # Replace missing values with NaN if any are defined
+            # Replace missing values with NaN if any are defined; tally what was blanked
+            # (system missing and declared codes) for frequency rows and sysmiss_count.
+            tally = MissingTally()
             try:
+                before = df.copy()
                 df = self._prepare_dataframe_missings(df, params.missings)
+                tally.add(before, df)
+                del before
             except Exception as e:
                 raise HTTPException(500, detail=f"Failed to process data types: {str(e)}") from e
 
@@ -482,12 +503,7 @@ class DataDictionary:
             variables = []
             try:
                 for name in meta.column_names:
-                    user_missings = []
-                    if params.missings:
-                        for missing_col, missings in params.missings.items():
-                            if missing_col == name:
-                                user_missings = _missing_values_as_list(missings)
-                                break
+                    user_missings = _missing_values_as_list(discrete_map.get(name))
                     cached_vc = value_counts_cache.get(name)
                     variables.append(
                         self.variable_summary(
@@ -509,7 +525,7 @@ class DataDictionary:
 
             if len(params.weights) > 0:
                 try:
-                    missings_map = params.missings or {}
+                    missings_map = discrete_map
                     for weight in params.weights:
                         validate_weight_columns_for_descr_stats(
                             df, weight.field, weight.weight_field
@@ -541,8 +557,9 @@ class DataDictionary:
                     raise
                 except Exception as e:
                     raise HTTPException(500, detail=f"Failed to calculate weights: {str(e)}")
-                
-            
+
+            tally.apply(variables, meta.variable_value_labels)
+
             return {
                 'rows':meta.number_rows,
                 'columns':meta.number_columns,
@@ -818,11 +835,12 @@ class DataDictionary:
 
 
     def variable_missing_values(self, meta,variable_name):
-        """Return the missing values for a variable in a dataframe"""
-        if variable_name in meta.missing_user_values:
-            return meta.missing_user_values[variable_name]
-        else:
-            return []
+        """Discrete missing codes the file declares for a variable (Stata or SPSS)."""
+        return self.variable_invalrng(meta, variable_name)["values"]
+
+    def variable_invalrng(self, meta, variable_name):
+        """var_invalrng from the file: discrete codes in `values`, SPSS ranges in `ranges`."""
+        return invalrng(column_declared_missings(meta, variable_name))
 
 
     def variable_categories(self, meta,variable_name):
@@ -930,9 +948,7 @@ class DataDictionary:
             "frequencies_skipped_reason": plan["skip_reason"],
             "loc_width": meta.variable_display_width[variable_name],
             #"missing_values": self.variable_missing_values(meta,variable_name),
-            "var_invalrng":{
-                "values": self.variable_missing_values(meta,variable_name)
-            },
+            "var_invalrng": self.variable_invalrng(meta, variable_name),
             #"var_invalrng": {
             #    "values": [
             #    "9",

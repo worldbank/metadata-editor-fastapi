@@ -11,6 +11,7 @@ from src.VarInfo import VarInfo
 from src.DictParams import DictParams
 from src.DataUtils import DataUtils
 from src.DataDictionaryWeightValidation import validate_weight_columns_for_descr_stats
+from src.utils.declared_missings import discrete_missings_map, missing_ranges_map, apply_missing_ranges, MissingTally
 from src.weighted_freq_key import (
     weighted_freq_category_key,
     sort_category_items,
@@ -202,10 +203,18 @@ class DataDictionaryCsv:
 
             df, meta = self.load_file(params, metadataonly=False, usecols=columns, dtypes=dtypes)
 
-            missings_map = params.missings or {}
+            # Discrete codes are replaced by value; ranges ({"lo", "hi"}) by comparison.
+            # Tally system missing and declared codes before blanking them; numeric
+            # coercion afterwards (unparseable text) is not counted as a declared code.
+            tally = MissingTally()
+            before = df.copy()
+            missings_map = discrete_missings_map(params.missings)
             if missings_map:
                 logger.debug(f"Replacing missing values: {missings_map}")
                 df = df.replace(missings_map, np.nan)
+            apply_missing_ranges(df, missing_ranges_map(params.missings))
+            tally.add(before, df)
+            del before
 
             self._apply_numeric_intent_normalization(df, numeric_intent)
 
@@ -260,7 +269,9 @@ class DataDictionaryCsv:
             #add weights stats to variables
             if weights:
                 self.apply_weighted_freq_to_variables(variables, weights)
-                            
+
+            tally.apply(variables, meta.variable_value_labels)
+
             result = {
                 'rows':meta.number_rows,
                 'columns':meta.number_columns,

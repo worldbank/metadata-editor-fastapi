@@ -17,6 +17,7 @@ from statsmodels.stats.weightstats import DescrStatsW
 from types import SimpleNamespace
 import logging
 import traceback
+from src.utils.declared_missings import split_missings
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -238,10 +239,11 @@ class ExportDatafile:
             elif params.export_format in ['spss','sav']:
                 # For SPSS export, convert special missing values to system missings
                 # SPSS doesn't support special missing values like 'a', 'b', 'c'
-                df_for_spss, spss_missing_ranges = self.prepare_data_for_spss_export(df, params.missings)
+                string_vars = self.string_columns_from_dtypes(params.dtypes)
+                df_for_spss, spss_missing_ranges = self.prepare_data_for_spss_export(df, params.missings, string_vars)
                 
                 # Validate that special missing values were properly converted
-                if not self.validate_spss_export_data(df_for_spss, params.missings):
+                if not self.validate_spss_export_data(df_for_spss, params.missings, string_vars):
                     logger.warning("Special missing values detected in data prepared for SPSS export - this may cause issues")
                 
                 # Prepare value labels for SPSS export (numeric keys for numeric columns, all keys for string columns)
@@ -472,7 +474,16 @@ class ExportDatafile:
             return False
         
 
-    def prepare_data_for_spss_export(self, df, missing_values):
+    @staticmethod
+    def string_columns_from_dtypes(dtypes):
+        """Columns the caller declares as text (the editor sends 'object' for string variables)."""
+        out = set()
+        for col, spec in (dtypes or {}).items():
+            if isinstance(spec, str) and spec.strip().lower() in ('object', 'str', 'string', 'character'):
+                out.add(col)
+        return out
+
+    def prepare_data_for_spss_export(self, df, missing_values, string_vars=None):
         """
         Prepare data for SPSS export by converting special missing values to system missings.
         SPSS doesn't support special missing values like 'a', 'b', 'c' - they must be converted to NaN.
@@ -492,9 +503,18 @@ class ExportDatafile:
         """
         try:
             spss_missing_ranges = {}
+            string_vars = string_vars or set()
             
             if missing_values:
                 for var, missing_vals in missing_values.items():
+                    if var in df.columns and var in string_vars:
+                        # String variable: every code (e.g. "NA") is an SPSS user missing value,
+                        # not a Stata letter — keep the data, declare the codes.
+                        discrete, _ = split_missings(missing_vals)
+                        codes = [str(v) for v in discrete if v is not None and str(v) != '']
+                        if codes:
+                            spss_missing_ranges[var] = codes
+                        continue
                     if var in df.columns:
                         # Convert special missing values to NaN in place (avoids full dataframe copy)
                         for missing_val in missing_vals:
@@ -502,8 +522,11 @@ class ExportDatafile:
                                 df[var] = df[var].replace(missing_val, np.nan).infer_objects(copy=False)
                                 logger.debug(f"Converted special missing value '{missing_val}' to NaN for variable '{var}' in SPSS export")
                         
-                        # Only keep numeric missing values for SPSS missing_ranges
-                        numeric_missings = [val for val in missing_vals if not (isinstance(val, str) and val.isalpha())]
+                        # Only keep numeric missing values for SPSS missing_ranges; ranges
+                        # ({"lo","hi"} or {"min","max"}) go in as pyreadstat {"lo","hi"}.
+                        discrete, ranges = split_missings(missing_vals)
+                        numeric_missings = [val for val in discrete if not (isinstance(val, str) and val.isalpha())]
+                        numeric_missings += [{"lo": lo, "hi": hi} for lo, hi in ranges]
                         if numeric_missings:
                             spss_missing_ranges[var] = numeric_missings
             
@@ -522,7 +545,7 @@ class ExportDatafile:
             raise Exception(f"Failed to prepare data for SPSS export: {str(e)}") from e
         
 
-    def validate_spss_export_data(self, df, missing_values):
+    def validate_spss_export_data(self, df, missing_values, string_vars=None):
         """
         Validate that data is properly prepared for SPSS export.
         Ensures no special missing values (like 'a', 'b', 'c') remain in the data.
@@ -542,7 +565,7 @@ class ExportDatafile:
         try:
             if missing_values:
                 for var, missing_vals in missing_values.items():
-                    if var in df.columns:
+                    if var in df.columns and var not in (string_vars or set()):
                         # Check if any special missing values remain in the data
                         for missing_val in missing_vals:
                             if isinstance(missing_val, str) and missing_val.isalpha():
