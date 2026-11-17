@@ -11,6 +11,7 @@ from src.ExportDatafile import ExportDatafile
 from src.routers.geospatial import router as geospatial_router
 from src.routers.timeseries import router as timeseries_router
 from src.reviewer import dispose_reviewer_job_if_needed, register_reviewer
+from src.assistant import register_assistant
 from src.version import get_version
 import re
 import pandas as pd
@@ -138,6 +139,7 @@ app.include_router(geospatial_router)
 # Include timeseries router
 app.include_router(timeseries_router)
 register_reviewer(app, _PROJECT_ROOT)
+register_assistant(app, _PROJECT_ROOT)
 
 # Cleanup metrics
 class CleanupMetrics:
