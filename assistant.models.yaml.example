@@ -1,0 +1,86 @@
+# Assistant model registry. Copy to assistant.models.yaml (gitignored).
+#
+# Clients choose a model by `alias` only. `litellm_params` is passed to LiteLLM as is, see
+# https://docs.litellm.ai/docs/providers for every provider's model string.
+# ${VAR} and ${VAR:-default} are expanded from the environment (also os.environ/VAR).
+# A model referencing an unset variable (e.g. a missing API key) is listed as unconfigured.
+#
+# local: true|false is required. It decides whether record data may leave your infrastructure:
+# ASSISTANT_LOCAL_ONLY=1 hides every model with local: false.
+# Model names below are examples; pin the ones you actually serve.
+
+default: local-lfm
+
+models:
+  # --- Default: LFM2.5-2.6B on llama.cpp llama-server (macOS / Windows / Linux) ---
+  # The same model the in-browser assistant runs (there as ONNX q4f16), here as GGUF Q4_K_M:
+  #   LiquidAI/LFM2.5-2.6B-GGUF @ e7caca5d835a3901a8e0d63e94009429bafafdfc
+  #   LFM2.5-2.6B-Q4_K_M.gguf, sha256 02a8b7e17487d326e46d68ce0ba24211e1b80a14c4cd0597fa73c1cd697f52ed
+  # Serve it with:
+  #   llama-server -hf LiquidAI/LFM2.5-2.6B-GGUF:Q4_K_M --jinja -c 32768 --port 8080
+  - alias: local-lfm
+    label: LFM2.5 2.6B (local)
+    local: true
+    litellm_params:
+      model: openai/lfm2.5-2.6b          # "openai/" = any OpenAI-compatible server
+      api_base: ${ASSISTANT_LLAMA_BASE:-http://127.0.0.1:8080/v1}
+      api_key: none
+    context_window: 32768
+    max_tokens: 6144
+    tool_mode: native                     # llama-server --jinja parses LFM tool calls
+    text_protocol: lfm                    # fallback if the server returns raw markers
+
+  # --- Other local options (Ollama) ---------------------------------------------
+  - alias: local-qwen
+    label: Qwen3 8B (local)
+    local: true
+    litellm_params:
+      model: ollama_chat/qwen3:8b
+      api_base: ${ASSISTANT_OLLAMA_BASE:-http://127.0.0.1:11434}
+    context_window: 32768
+    max_tokens: 4096
+    tool_mode: native
+
+  - alias: local-gemma
+    label: Gemma 3 12B (local)
+    local: true
+    litellm_params:
+      model: ollama_chat/gemma3:12b
+      api_base: ${ASSISTANT_OLLAMA_BASE:-http://127.0.0.1:11434}
+    context_window: 32768
+    max_tokens: 4096
+    tool_mode: text
+    text_protocol: hermes
+
+  # --- Hosted ------------------------------------------------------------------
+  - alias: openrouter-qwen
+    label: Qwen3 32B (OpenRouter)
+    local: false
+    litellm_params:
+      model: openrouter/qwen/qwen3-32b
+      api_key: ${OPENROUTER_API_KEY}
+    context_window: 32768
+
+  - alias: openai-mini
+    label: GPT-4o mini (OpenAI)
+    local: false
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: ${OPENAI_API_KEY}
+    context_window: 128000
+
+  - alias: claude
+    label: Claude Sonnet (Anthropic)
+    local: false
+    litellm_params:
+      model: anthropic/claude-sonnet-5-5
+      api_key: ${ANTHROPIC_API_KEY}
+    context_window: 200000
+
+  - alias: gemini-flash
+    label: Gemini Flash (Google)
+    local: false
+    litellm_params:
+      model: gemini/gemini-2.5-flash
+      api_key: ${GEMINI_API_KEY}
+    context_window: 1000000

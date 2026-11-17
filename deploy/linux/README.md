@@ -68,6 +68,9 @@ PORT=8000
 ```
 
 - Apache or NGINX with PHP running (Metadata Editor), on the **same host** as this service
+- Optional: the editor's server assistant. Install `requirements-assistant.txt` in the same conda
+  environment and add `assistant.env`; see [README-assistant.md](../../README-assistant.md#install).
+  The install script makes `db/` writable for the service user, where the assistant keeps its model cache.
 
 ---
 
@@ -328,3 +331,4 @@ ss -tlnp | grep 8000
 
 - [Main README](../../README.md) — security model, `.env` configuration, start scripts
 - [Windows service install](../windows/README.md) — equivalent guide for IIS/Windows Server
+- [Assistant](../../README-assistant.md) — optional server assistant for the editor
