@@ -24,6 +24,7 @@ import json
 from src.DictParams import DictParams
 from src.utils.dta_reader import read_dta, write_dta_to_csv
 from src.utils.sav_reader import write_sav_to_csv
+from src.utils.csv_normalize import normalize_csv_file
 import asyncio
 import functools
 import hashlib
@@ -349,9 +350,16 @@ def write_csv_file(fileinfo: FileInfo):
                 os.path.splitext(os.path.basename(fileinfo.file_path))[0] + '.csv',
             )
             write_sav_to_csv(fileinfo.file_path, csv_filepath, user_missing=True)
+
+        elif file_ext.lower() == '.csv':
+            # Already CSV: normalize in place to UTF-8, comma-separated
+            csv_filepath = fileinfo.file_path
+            csv_normalization = normalize_csv_file(csv_filepath)
         else:
             return {"error": "file not supported" + file_ext}
 
+    except ValueError:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail="error writing csv file: " + str(e))
     
@@ -360,6 +368,8 @@ def write_csv_file(fileinfo: FileInfo):
         'csv_file':csv_filepath,
         'csv_file_size': DataUtils.sizeof_fmt(os.path.getsize(csv_filepath))      
     }
+    if file_ext.lower() == '.csv':
+        output['csv_normalization'] = csv_normalization
 
     return output
 
@@ -808,7 +818,17 @@ async def write_data_dictionary_file(jobid, params: DictParams):
     app.jobs[jobid]["status"]="processing"
 
     try:
+        csv_normalization = None
+        if file_ext.lower() == '.csv':
+            # Normalize before reading so delimiter/encoding are handled consistently
+            try:
+                csv_normalization = await loop.run_in_executor(None, normalize_csv_file, file_path)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
+
         result=await loop.run_in_executor(None, datadict.get_data_dictionary_variable, params)
+        if csv_normalization is not None and isinstance(result, dict):
+            result['csv_normalization'] = csv_normalization
 
         app.jobs[jobid]["status"]="done"
         app.jobs[jobid]["completed_at"] = datetime.datetime.now().isoformat()
