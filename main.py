@@ -278,27 +278,30 @@ async def name_labels(params: NameLabelsParams):
 
 
 
+def _data_dictionary_from_params(params: DictParams):
+    """Shared by sync `/data-dictionary` and the queue worker (D-05 / F-13)."""
+    file_path = resolve_safe_path_http(params.file_path, label="file_path")
+    params = params.model_copy(update={"file_path": file_path})
+    file_ext = os.path.splitext(file_path)[1]
+    if file_ext.lower() == ".csv":
+        engine = DataDictionaryCsv()
+    else:
+        engine = DataDictionary()
+    return engine.get_data_dictionary_variable(params)
+
+
 @app.post("/data-dictionary")
-async def data_dictionary(fileinfo: FileInfo):
-    file_path = resolve_safe_path_http(fileinfo.file_path, label="file_path")
-    datadict=DataDictionary()
-    return datadict.get_data_dictionary(fileinfo.model_copy(update={"file_path": file_path}))
-    
+async def data_dictionary(params: DictParams):
+    # Same DictParams + get_data_dictionary_variable path as `/data-dictionary-queue`
+    # (D-05). Clients that used to send only `{file_path}` still work — other fields
+    # default empty. The old FileInfo → get_data_dictionary path ignored categorical
+    # and treated Stata letter missings differently (F-13).
+    return _data_dictionary_from_params(params)
 
 
 @app.post("/data-dictionary-variable")
 async def data_dictionary_variable(params: DictParams):
-    file_path = resolve_safe_path_http(params.file_path, label="file_path")
-    params = params.model_copy(update={"file_path": file_path})
-
-    file_ext=os.path.splitext(file_path)[1]
-
-    if file_ext.lower() == '.csv':
-        datadict=DataDictionaryCsv()
-    else:
-        datadict=DataDictionary()
-
-    return datadict.get_data_dictionary_variable(params)
+    return _data_dictionary_from_params(params)
 
 
 

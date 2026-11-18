@@ -378,32 +378,22 @@ class DataDictionaryCsv:
         
     
 
-    def variable_measure(self, df, meta,variable_name,variable_has_categories=False):
-        """Return the measure for a variable in a dataframe"""
-        # var measure takes values: scale, ordinal, nominal or unknown
+    def variable_measure(self, df, meta, variable_name, variable_has_categories=False):
+        """Return the measure for a CSV column.
 
-        if variable_has_categories:
-            return 'discrete'
-
-        # Taken from the file, not inferred from the data.
+        Same rule as DataDictionary.variable_measure (D-01): file labels / dtype,
+        never whether frequencies were computed. `variable_has_categories` ignored.
+        """
         value_labels = meta.variable_value_labels
 
         if variable_name in value_labels:
             return 'discrete'
 
-        measure_mappings={
-            'scale': 'contin',
-            'ordinal': 'discrete',
-            'nominal': 'discrete',
-            'unknown': 'contin'
-        }
-
         if is_numeric_dtype(df[variable_name]):
             return 'contin'
-        elif is_string_dtype(df[variable_name]):
+        if is_string_dtype(df[variable_name]):
             return 'discrete'
-        else:
-            return measure_mappings['unknown']
+        return 'contin'
 
 
     def variable_valid_range(self, df,meta,variable_name,user_missings=list()):

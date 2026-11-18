@@ -659,13 +659,14 @@ class DataDictionary:
         else:
             return 0
 
-    def variable_measure(self, meta,variable_name,variable_has_categories=False):
-        """Return the measure for a variable in a dataframe"""
-        # var measure takes values: scale, ordinal, nominal or unknown
+    def variable_measure(self, meta, variable_name, variable_has_categories=False):
+        """Return the measure for a variable in a dataframe.
 
-        if variable_has_categories:
-            return 'discrete'
-
+        From the file only (plan §4.1 / D-01): SPSS measure, or a Stata value-label
+        attachment. Never from whether a frequency list was computed — that used to
+        flip `discrete`↔`contin` when freqs were skipped or truncated.
+        `variable_has_categories` is ignored (kept for call-site compatibility).
+        """
         # Taken from the file, not inferred from the data. SPSS states the measure
         # outright; Stata has no such concept, and attaching a value label is the only
         # way a Stata file says "this is a code list", so we honour that.
@@ -674,11 +675,11 @@ class DataDictionary:
         if variable_name in value_labels:
             return 'discrete'
 
-        measure_mappings={
+        measure_mappings = {
             'scale': 'contin',
             'ordinal': 'discrete',
             'nominal': 'discrete',
-            'unknown': 'contin'
+            'unknown': 'contin',
         }
 
         return measure_mappings[meta.variable_measure[variable_name]]
