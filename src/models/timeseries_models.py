@@ -94,6 +94,24 @@ class CsvHeadersValidateResponse(BaseModel):
 	csv_headers: List[str] = Field(default_factory=list)
 
 
+class CsvSelectColumn(BaseModel):
+	"""One column of the import: target name in timeseries, read from a CSV column (or NULL when absent)."""
+
+	name: str = Field(..., min_length=1, max_length=255, description="Column name in timeseries")
+	source: Optional[str] = Field(
+		None,
+		max_length=255,
+		description="CSV column to read (after column_names renames); null adds an empty column",
+	)
+
+
+class NoteColumnSpec(BaseModel):
+	"""Footnote column and its note text columns (returned as distinct tuples, not stored)."""
+
+	column: str = Field(..., min_length=1, max_length=255, description="Footnote (note ID) column name")
+	text_columns: List[str] = Field(default_factory=list, description="CSV note text columns, in position order")
+
+
 class IndicatorReplaceFromCsvRequest(BaseModel):
 	"""
 	Validate CSV headers, replace project timeseries from CSV rows matching indicator_value.
@@ -123,6 +141,25 @@ class IndicatorReplaceFromCsvRequest(BaseModel):
 		None,
 		description="When set, timeseries includes _ts_year and _ts_freq",
 	)
+	column_names: Optional[List[str]] = Field(
+		None,
+		description="Names for every CSV column in file order (replaces the header row while reading; file is not modified)",
+	)
+	select_columns: Optional[List[CsvSelectColumn]] = Field(
+		None,
+		description="Columns to keep in timeseries. When set, extra CSV columns are ignored instead of rejected",
+	)
+	note_columns: Optional[List[NoteColumnSpec]] = Field(
+		None,
+		description="Footnote columns: job result includes distinct (note ID, note text) tuples",
+	)
+	note_tuple_limit: int = Field(20000, ge=1, le=100000)
+	export_csv_path: Optional[str] = Field(
+		None,
+		description="When set, export timeseries to this data/indicator_data.csv in the same job",
+	)
+	expected_size: Optional[int] = Field(None, description="Refuse the import if the CSV size differs")
+	expected_mtime: Optional[int] = Field(None, description="Refuse the import if the CSV mtime differs")
 
 
 class IndicatorReplaceFromCsvResult(BaseModel):

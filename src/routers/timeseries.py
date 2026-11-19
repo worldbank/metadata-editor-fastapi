@@ -6,6 +6,7 @@ import tempfile
 import time
 import datetime
 import json
+import asyncio
 import functools
 import logging
 import traceback
@@ -53,6 +54,13 @@ from ..models.timeseries_models import (
 	TimeseriesDeleteResponse,
 )
 from ..services.timeseries_service import TimeseriesService
+from ..services.indicator_csv_import import (
+	CsvImportError,
+	csv_distinct_values,
+	export_timeseries_to_file_db,
+	resolve_csv_column_names,
+	run_indicator_csv_import,
+)
 from ..utils.timeseries_utils import (
 	STAGING_TABLE_NAME,
 	TIMESERIES_TABLE_NAME,
@@ -344,49 +352,16 @@ def _csv_distinct_from_path(
 	delimiter: str,
 	column: str,
 	limit: int = 3000,
+	column_names: Optional[List[str]] = None,
 ) -> tuple[str, List[StagingDistinctValueCount], int, bool]:
-	"""Distinct string values for one column via read_csv_auto (no staging table)."""
-	headers = _read_csv_headers_or_raise(csv_path, delimiter)
-	resolved = resolve_column_name_case_insensitive(column, headers)
-	if not resolved:
-		raise HTTPException(
-			status_code=400,
-			detail=f"Column not found in CSV header: {column}",
+	"""Distinct string values for one column (one scan of the CSV, no staging table)."""
+	try:
+		resolved, pairs, csv_row_count, truncated = csv_distinct_values(
+			csv_path, delimiter, column, limit, column_names
 		)
-
-	escaped = escape_sql_string(csv_path)
-	delim = delimiter.replace("'", "''")
-	qcol = quote_identifier(resolved)
-	limit = max(1, min(int(limit), 3000))
-
-	with duckdb.connect(":memory:") as conn:
-		count_row = conn.execute(
-			f"SELECT COUNT(*) FROM read_csv_auto('{escaped}', delim='{delim}', header=true, all_varchar=true)"
-		).fetchone()
-		csv_row_count = int(count_row[0]) if count_row else 0
-
-		rows = conn.execute(
-			f"""
-			SELECT CAST({qcol} AS VARCHAR) AS v, COUNT(*) AS c
-			FROM read_csv_auto('{escaped}', delim='{delim}', header=true, all_varchar=true)
-			WHERE {qcol} IS NOT NULL AND TRIM(CAST({qcol} AS VARCHAR)) <> ''
-			GROUP BY 1
-			ORDER BY c DESC, v ASC
-			LIMIT ?
-			""",
-			[limit + 1],
-		).fetchall()
-
-	truncated = len(rows) > limit
-	if truncated:
-		rows = rows[:limit]
-
-	items = [
-		StagingDistinctValueCount(value=str(r[0]), count=int(r[1]))
-		for r in rows
-		if r[0] is not None
-	]
-
+	except CsvImportError as e:
+		raise HTTPException(status_code=400, detail=str(e))
+	items = [StagingDistinctValueCount(value=v, count=c) for v, c in pairs]
 	return resolved, items, csv_row_count, truncated
 
 
@@ -1096,6 +1071,10 @@ async def indicator_csv_distinct(
 	column: str = Query(..., min_length=1, description="Column name (indicator_id)"),
 	delimiter: str = Query(",", min_length=1, max_length=1),
 	limit: int = Query(3000, ge=1, le=3000),
+	column_names: Optional[str] = Query(
+		None,
+		description="Comma-separated names for every CSV column in file order (replaces the header row while reading)",
+	),
 ):
 	"""
 	Distinct non-null values in a CSV column without loading staging.
@@ -1107,8 +1086,9 @@ async def indicator_csv_distinct(
 	if not os.path.isfile(csv_path):
 		raise HTTPException(status_code=400, detail=f"CSV file not found: {csv_path}")
 
-	resolved, items, csv_row_count, truncated = _csv_distinct_from_path(
-		csv_path, delimiter, column, limit
+	names = [n for n in column_names.split(",")] if column_names else None
+	resolved, items, csv_row_count, truncated = await asyncio.to_thread(
+		_csv_distinct_from_path, csv_path, delimiter, column, limit, names
 	)
 
 	return CsvDistinctQueryResponse(
@@ -1168,11 +1148,30 @@ async def indicator_replace_from_csv_queue(
 	if not os.path.isfile(csv_path):
 		raise HTTPException(status_code=400, detail=f"CSV file not found: {csv_path}")
 
-	headers = _read_csv_headers_or_raise(csv_path, request.delimiter)
-	names = [c.name for c in request.expected_columns]
-	ok, msg, _, _ = validate_csv_headers_exact_set(headers, names)
-	if not ok:
-		raise HTTPException(status_code=400, detail=msg or "CSV headers do not match DSD columns")
+	if request.export_csv_path:
+		request = request.model_copy(update={
+			"export_csv_path": _validate_indicator_archive_csv_path(request.project_id, request.export_csv_path),
+		})
+
+	try:
+		csv_names = resolve_csv_column_names(csv_path, request.delimiter, request.column_names)
+	except CsvImportError as e:
+		raise HTTPException(status_code=400, detail=str(e))
+	if request.select_columns:
+		missing = [
+			c.source for c in request.select_columns
+			if c.source and not resolve_column_name_case_insensitive(c.source, csv_names)
+		]
+		if missing:
+			raise HTTPException(
+				status_code=400,
+				detail="CSV is missing required data structure columns: " + ", ".join(missing),
+			)
+	else:
+		names = [c.name for c in request.expected_columns]
+		ok, msg, _, _ = validate_csv_headers_exact_set(csv_names, names)
+		if not ok:
+			raise HTTPException(status_code=400, detail=msg or "CSV headers do not match DSD columns")
 
 	jobid = f"indicator-replace-csv-{int(time.time() * 1000)}"
 	return await _enqueue_replace_from_csv(jobid, request, service)
@@ -2414,106 +2413,40 @@ async def process_replace_from_csv_job(
 	request: IndicatorReplaceFromCsvRequest,
 	service: TimeseriesService,
 ):
+	"""
+	Replace project timeseries from CSV in a worker thread.
+	The live timeseries table is swapped atomically; on failure the previous data stays in place.
+	"""
 	from main import app
 
 	app.jobs[jobid]["status"] = "processing"
 	db_path = service.get_db_path()
-	schema_name = build_project_schema_name(request.project_id)
 
 	try:
 		csv_path = resolve_safe_path(request.csv_path)
-		headers = _read_csv_headers_or_raise(csv_path, request.delimiter)
-		names = [c.name for c in request.expected_columns]
-		ok, msg, _, _ = validate_csv_headers_exact_set(headers, names)
-		if not ok:
-			raise ValueError(msg or "CSV headers do not match DSD columns")
-
-		with duckdb.connect(db_path) as conn:
-			conn.execute(f"CREATE SCHEMA IF NOT EXISTS {quote_identifier(schema_name)}")
-			_drop_timeseries_table(conn, schema_name)
-			_drop_staging_table(conn, schema_name)
-
-		_duckdb_import_csv_table(
+		request = request.model_copy(update={"csv_path": csv_path})
+		result = await asyncio.to_thread(
+			run_indicator_csv_import,
 			db_path,
-			request.project_id,
-			csv_path,
-			request.delimiter,
-			True,
-			STAGING_TABLE_NAME,
+			request,
+			request.export_csv_path,
 		)
-
-		qual_st = f"{quote_identifier(schema_name)}.{quote_identifier(STAGING_TABLE_NAME)}"
-		qual_ts = f"{quote_identifier(schema_name)}.{quote_identifier(TIMESERIES_TABLE_NAME)}"
-
-		with duckdb.connect(db_path) as conn:
-			col_rows = fetch_table_column_rows(conn, schema_name, STAGING_TABLE_NAME)
-			col_names = [r[0] for r in col_rows]
-			resolved = resolve_column_name_case_insensitive(
-				request.indicator_column, col_names
-			)
-			if not resolved:
-				raise ValueError(
-					f"Column not found in CSV: {request.indicator_column}"
-				)
-
-			assert_staging_time_period_matches_implied_freq(
-				conn,
-				schema_name,
-				STAGING_TABLE_NAME,
-				qual_st,
-				request.time_spec,
-				resolved,
-				str(request.indicator_value),
-			)
-
-			_create_timeseries_from_staging(
-				conn,
-				schema_name,
-				qual_st,
-				qual_ts,
-				resolved,
-				str(request.indicator_value),
-				request.time_spec,
-			)
-
-			row_count = int(conn.execute(f"SELECT COUNT(*) FROM {qual_ts}").fetchone()[0])
-			staging_dropped = _drop_staging_table(conn, schema_name)
-
-		result = {
-			"project_id": request.project_id,
-			"row_count": row_count,
-			"indicator_column_resolved": resolved,
-			"indicator_value": request.indicator_value,
-			"staging_dropped": staging_dropped,
-		}
-
-		app.jobs[jobid]["status"] = "done"
-		app.jobs[jobid]["completed_at"] = datetime.datetime.now().isoformat()
 
 		os.makedirs("jobs", exist_ok=True)
 		with open(os.path.join("jobs", f"{jobid}.json"), "w") as outfile:
 			json.dump(result, outfile)
 
+		app.jobs[jobid]["status"] = "done"
+		app.jobs[jobid]["completed_at"] = datetime.datetime.now().isoformat()
+
 		logger.info(
 			"Replace-from-csv job %s completed: %s rows",
 			jobid,
-			row_count,
+			result.get("row_count"),
 		)
 
 	except Exception as e:
 		logger.error("Replace-from-csv job %s failed: %s", jobid, str(e))
-		try:
-			with duckdb.connect(db_path) as conn:
-				conn.execute(f"CREATE SCHEMA IF NOT EXISTS {quote_identifier(schema_name)}")
-				_drop_timeseries_table(conn, schema_name)
-				_drop_staging_table(conn, schema_name)
-		except Exception as cleanup_err:
-			logger.warning(
-				"Replace-from-csv cleanup failed for %s: %s",
-				jobid,
-				cleanup_err,
-			)
-
 		app.jobs[jobid]["status"] = "error"
 		app.jobs[jobid]["error"] = str(e)
 		app.jobs[jobid]["error_details"] = {
@@ -2533,65 +2466,36 @@ async def process_export_to_file_job(
 
 	app.jobs[jobid]["status"] = "processing"
 	db_path = service.get_db_path()
-	schema_name = build_project_schema_name(request.project_id)
-	output_path = _validate_indicator_archive_csv_path(
-		request.project_id,
-		request.output_csv_path,
-	)
-	tmp_path = None
 
 	try:
-		os.makedirs(os.path.dirname(output_path), exist_ok=True)
-		if os.path.isfile(output_path):
-			os.unlink(output_path)
-
-		qual = f"{quote_identifier(schema_name)}.{quote_identifier(TIMESERIES_TABLE_NAME)}"
-		tmp_path = output_path + ".export_" + str(int(time.time() * 1000))
-		path_norm = tmp_path.replace("\\", "/").replace("'", "''")
-
-		with duckdb.connect(db_path) as conn:
-			if not _timeseries_table_exists(conn, schema_name):
-				raise ValueError("Timeseries table not found for this project")
-			row_count = int(conn.execute(f"SELECT COUNT(*) FROM {qual}").fetchone()[0])
-			conn.execute(
-				f"COPY (SELECT * FROM {qual}) TO '{path_norm}' (HEADER, DELIMITER ',')"
-			)
-
-		if not os.path.isfile(tmp_path):
-			raise ValueError("Export did not create output file")
-
-		os.replace(tmp_path, output_path)
-		bytes_written = int(os.path.getsize(output_path))
-
-		result = {
-			"project_id": request.project_id,
-			"output_csv_path": output_path,
-			"row_count": row_count,
-			"bytes_written": bytes_written,
-		}
-
-		app.jobs[jobid]["status"] = "done"
-		app.jobs[jobid]["completed_at"] = datetime.datetime.now().isoformat()
+		output_path = _validate_indicator_archive_csv_path(
+			request.project_id,
+			request.output_csv_path,
+		)
+		export = await asyncio.to_thread(
+			export_timeseries_to_file_db,
+			db_path,
+			request.project_id,
+			output_path,
+		)
+		result = {"project_id": request.project_id, **export}
 
 		os.makedirs("jobs", exist_ok=True)
 		with open(os.path.join("jobs", f"{jobid}.json"), "w") as outfile:
 			json.dump(result, outfile)
 
+		app.jobs[jobid]["status"] = "done"
+		app.jobs[jobid]["completed_at"] = datetime.datetime.now().isoformat()
+
 		logger.info(
 			"Export-to-file job %s completed: %s rows -> %s",
 			jobid,
-			row_count,
+			result["row_count"],
 			output_path,
 		)
 
 	except Exception as e:
 		logger.error("Export-to-file job %s failed: %s", jobid, str(e))
-		if tmp_path and os.path.isfile(tmp_path):
-			try:
-				os.unlink(tmp_path)
-			except OSError:
-				pass
-
 		app.jobs[jobid]["status"] = "error"
 		app.jobs[jobid]["error"] = str(e)
 		app.jobs[jobid]["error_details"] = {
