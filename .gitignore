@@ -6,4 +6,10 @@ venv313
 trash/
 db/
 tests/
+!src/assistant/tests/
+!src/assistant/tests/**
+# The two lines above re-include everything under the tests folder; keep bytecode out again.
+src/assistant/tests/**/__pycache__/
 logs/
+assistant.env
+assistant.models.yaml

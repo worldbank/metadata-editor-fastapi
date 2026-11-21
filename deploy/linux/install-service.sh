@@ -85,6 +85,13 @@ Then re-run this script with that path:
 Activate the conda environment and run: pip install -r requirements.txt"
     fi
 
+    # Optional assistant (README-assistant.md): configured but not installed only logs a line at
+    # startup, so say it here where someone is looking.
+    if [ -f "$PROJECT_DIR/assistant.env" ] && ! "$CONDA_PYTHON_PATH" -c "import litellm, yaml" 2>/dev/null; then
+        warn "assistant.env is present but the assistant is not installed in this environment.
+Activate the conda environment and run: pip install -r requirements-assistant.txt"
+    fi
+
     if [ ! -f "$PROJECT_DIR/main.py" ]; then
         error "main.py not found in PROJECT_DIR: $PROJECT_DIR
 Set PROJECT_DIR to the application root directory."
@@ -233,8 +240,10 @@ create_service_user() {
 
     # Recursive: files left behind by earlier manual runs (often root-owned)
     # would otherwise block log rotation and job cleanup.
-    mkdir -p "$PROJECT_DIR/logs" "$PROJECT_DIR/jobs"
-    chown -R "$SERVICE_USER:$SERVICE_USER" "$PROJECT_DIR/logs" "$PROJECT_DIR/jobs"
+    # db/ holds the job store (db/jobs.sqlite) and, with the optional assistant, its embedding
+    # model, retrieval index and sources cache.
+    mkdir -p "$PROJECT_DIR/logs" "$PROJECT_DIR/jobs" "$PROJECT_DIR/db"
+    chown -R "$SERVICE_USER:$SERVICE_USER" "$PROJECT_DIR/logs" "$PROJECT_DIR/jobs" "$PROJECT_DIR/db"
 }
 
 # -------------------------------------------------------

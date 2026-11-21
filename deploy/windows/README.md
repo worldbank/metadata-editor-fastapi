@@ -218,3 +218,4 @@ removed.
 - [Linux service setup (systemd)](../linux/README.md)
 - [Geospatial environment setup (Miniconda3)](../../README-geospatial.md)
 - [NSSM documentation](https://nssm.cc/usage)
+- [Assistant](../../README-assistant.md) — optional server assistant for the editor

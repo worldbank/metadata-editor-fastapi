@@ -1,0 +1,10 @@
+# Server-side assistant (optional). Install with: pip install -r requirements-assistant.txt
+# All model calls go through LiteLLM (OpenAI-compatible chat completions).
+# Pinned: 1.106.1 failed every tool call with "No module named 'mcp'" (2026-10-21); 1.95.1 is the tested version.
+litellm==1.95.1
+pyyaml>=6
+# Document retrieval: local embeddings on ONNX Runtime (CPU, any OS; no PyTorch), BM25 in-process.
+onnxruntime>=1.20
+tokenizers>=0.20
+huggingface_hub>=0.25
+pypdf>=5
